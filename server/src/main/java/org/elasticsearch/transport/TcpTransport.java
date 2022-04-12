@@ -856,6 +856,7 @@ public abstract class TcpTransport extends AbstractLifecycleComponent implements
     public static Set<ProfileSettings> getProfileSettings(Settings settings) {
         HashSet<ProfileSettings> profiles = new HashSet<>();
         boolean isDefaultSet = false;
+        // transport.profiles.前缀的配置
         for (String profile : settings.getGroups("transport.profiles.", true).keySet()) {
             profiles.add(new ProfileSettings(settings, profile));
             if (TransportSettings.DEFAULT_PROFILE.equals(profile)) {

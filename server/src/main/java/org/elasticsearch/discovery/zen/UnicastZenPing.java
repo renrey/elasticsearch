@@ -120,6 +120,7 @@ public class UnicastZenPing implements ZenPing {
             concurrentConnects,
             resolveTimeout);
 
+        // 注册监听ping的接口
         transportService.registerRequestHandler(ACTION_NAME, ThreadPool.Names.SAME, UnicastPingRequest::new,
             new UnicastPingRequestHandler());
 
@@ -212,6 +213,11 @@ public class UnicastZenPing implements ZenPing {
 
             @Override
             protected void doRun() throws Exception {
+                /**
+                 * 发送ping请求
+                 * 响应处理：
+                 * @see org.elasticsearch.discovery.zen.UnicastZenPing.UnicastPingRequestHandler#messageReceived(org.elasticsearch.discovery.zen.UnicastZenPing.UnicastPingRequest, org.elasticsearch.transport.TransportChannel, org.elasticsearch.tasks.Task)
+                 */
                 sendPings(requestDuration, pingingRound);
             }
         };
@@ -392,6 +398,11 @@ public class UnicastZenPing implements ZenPing {
                 }
 
                 logger.trace("[{}] sending to {}", pingingRound.id(), node);
+                /**
+                 * 发送请求
+                 * 处理：
+                 * @see UnicastPingRequestHandler#messageReceived(org.elasticsearch.discovery.zen.UnicastZenPing.UnicastPingRequest, org.elasticsearch.transport.TransportChannel, org.elasticsearch.tasks.Task)
+                 */
                 transportService.sendRequest(connection, ACTION_NAME, pingRequest,
                     TransportRequestOptions.timeout(TimeValue.timeValueMillis((long) (timeout.millis() * 1.25))),
                     getPingResponseHandler(pingingRound, node));
@@ -480,6 +491,9 @@ public class UnicastZenPing implements ZenPing {
         return new UnicastPingResponse(request.id, pingResponses.toArray(new PingResponse[pingResponses.size()]));
     }
 
+    /**
+     * 处理ping请求
+     */
     class UnicastPingRequestHandler implements TransportRequestHandler<UnicastPingRequest> {
 
         @Override

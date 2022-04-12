@@ -122,6 +122,7 @@ public class GatewayService extends AbstractLifecycleComponent implements Cluste
 
     @Override
     protected void doStart() {
+        // 具有master角色，把GatewayService添加到listener
         if (DiscoveryNode.isMasterNode(clusterService.getSettings())) {
             // use post applied so that the state will be visible to the background recovery thread we spawn in performStateRecovery
             clusterService.addListener(this);

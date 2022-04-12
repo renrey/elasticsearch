@@ -650,10 +650,12 @@ public class ActionModule extends AbstractModule {
 
     public void initRestHandlers(Supplier<DiscoveryNodes> nodesInCluster) {
         List<AbstractCatAction> catActions = new ArrayList<>();
+        // 注册执行逻辑
         Consumer<RestHandler> registerHandler = handler -> {
             if (handler instanceof AbstractCatAction) {
                 catActions.add((AbstractCatAction) handler);
             }
+            // 把Action(Handler)的所有route注册到restController
             restController.registerHandler(handler);
         };
         registerHandler.accept(new RestAddVotingConfigExclusionAction());

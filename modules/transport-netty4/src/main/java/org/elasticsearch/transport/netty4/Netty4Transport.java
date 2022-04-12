@@ -112,10 +112,13 @@ public class Netty4Transport extends TcpTransport {
     protected void doStart() {
         boolean success = false;
         try {
+            // 1. 创建并封装EventLoopGroup(NioEventLoopGroup)
             sharedGroup = sharedGroupFactory.getTransportGroup();
+            // 2. netty的客户端Bootstrap
             clientBootstrap = createClientBootstrap(sharedGroup);
             if (NetworkService.NETWORK_SERVER.get(settings)) {
                 for (ProfileSettings profileSettings : profileSettings) {
+                    // 3. 服务器Bootstrap
                     createServerBootstrap(profileSettings, sharedGroup);
                     bindServer(profileSettings);
                 }
@@ -131,7 +134,7 @@ public class Netty4Transport extends TcpTransport {
 
     private Bootstrap createClientBootstrap(SharedGroupFactory.SharedGroup sharedGroup) {
         final Bootstrap bootstrap = new Bootstrap();
-        bootstrap.group(sharedGroup.getLowLevelGroup());
+        bootstrap.group(sharedGroup.getLowLevelGroup()); // 绑定EventLoopGroup
 
         // NettyAllocator will return the channel type designed to work with the configured allocator
         assert Netty4NioSocketChannel.class.isAssignableFrom(NettyAllocator.getChannelType());

@@ -91,7 +91,7 @@ public class TransportService extends AbstractLifecycleComponent
 
     private final AtomicBoolean handleIncomingRequests = new AtomicBoolean();
     private final DelegatingTransportMessageListener messageListener = new DelegatingTransportMessageListener();
-    protected final Transport transport;
+    protected final Transport transport; // Netty4Transport
     protected final ConnectionManager connectionManager;
     protected final ThreadPool threadPool;
     protected final ClusterName clusterName;
@@ -258,8 +258,13 @@ public class TransportService extends AbstractLifecycleComponent
 
     @Override
     protected void doStart() {
+        // 添加通信listener，本类的主要用于打印日志
         transport.setMessageListener(this);
-        connectionManager.addListener(this);
+        connectionManager.addListener(this); // 主要执行onConnectionClosed
+        /**
+         * 启动内部通信组件！！！
+         * @see org.elasticsearch.transport.netty4.Netty4Transport#doStart()
+         */
         transport.start();
         if (transport.boundAddress() != null && logger.isInfoEnabled()) {
             logger.info("{}", transport.boundAddress());

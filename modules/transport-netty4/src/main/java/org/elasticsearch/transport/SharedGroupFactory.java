@@ -74,6 +74,7 @@ public final class SharedGroupFactory {
 
     private SharedGroup getGenericGroup() {
         if (genericGroup == null) {
+            // 创建Netty的EventLoopGroup --- NioEventLoopGroup
             EventLoopGroup eventLoopGroup = new NioEventLoopGroup(workerCount,
                 daemonThreadFactory(settings, TcpTransport.TRANSPORT_WORKER_THREAD_NAME_PREFIX));
             this.genericGroup = new RefCountedGroup(eventLoopGroup);
@@ -117,6 +118,7 @@ public final class SharedGroupFactory {
             this.refCountedGroup = refCountedGroup;
         }
 
+        // NioEventLoopGroup
         public EventLoopGroup getLowLevelGroup() {
             return refCountedGroup.eventLoopGroup;
         }

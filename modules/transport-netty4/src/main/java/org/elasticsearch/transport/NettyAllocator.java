@@ -30,7 +30,7 @@ public class NettyAllocator {
     private static final AtomicBoolean descriptionLogged = new AtomicBoolean(false);
 
     private static final long SUGGESTED_MAX_ALLOCATION_SIZE;
-    private static final ByteBufAllocator ALLOCATOR;
+    private static final ByteBufAllocator ALLOCATOR; // 默认NoDirectBuffers
     private static final String DESCRIPTION;
 
     private static final String USE_UNPOOLED = "es.use_unpooled_allocator";
@@ -125,7 +125,7 @@ public class NettyAllocator {
 
     public static Class<? extends Channel> getChannelType() {
         if (ALLOCATOR instanceof NoDirectBuffers) {
-            return CopyBytesSocketChannel.class;
+            return CopyBytesSocketChannel.class;// 默认
         } else {
             return Netty4NioSocketChannel.class;
         }
@@ -133,7 +133,7 @@ public class NettyAllocator {
 
     public static Class<? extends ServerChannel> getServerChannelType() {
         if (ALLOCATOR instanceof NoDirectBuffers) {
-            return CopyBytesServerSocketChannel.class;
+            return CopyBytesServerSocketChannel.class; // 默认
         } else {
             return NioServerSocketChannel.class;
         }

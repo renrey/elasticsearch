@@ -52,6 +52,7 @@ public abstract class Command implements Closeable {
 
     /** Parses options for this command from args and executes it. */
     public final int main(String[] args, Terminal terminal) throws Exception {
+        // 关闭钩子
         if (addShutdownHook()) {
 
             shutdownHookThread = new Thread(() -> {
@@ -76,6 +77,7 @@ public abstract class Command implements Closeable {
         beforeMain.run();
 
         try {
+            // 执行execute方法
             mainWithoutErrorHandling(args, terminal);
         } catch (OptionException e) {
             // print help to stderr on exceptions

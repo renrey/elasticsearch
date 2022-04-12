@@ -293,6 +293,7 @@ public class PathTrie<T> {
      * allowing the value to be updated if desired.
      */
     public void insertOrUpdate(String path, T value, BiFunction<T, T, T> updater) {
+        // path拆开
         String[] strings = path.split(SEPARATOR);
         if (strings.length == 0) {
             if (rootValue != null) {
@@ -302,6 +303,7 @@ public class PathTrie<T> {
             }
             return;
         }
+        // 判断path是第几级路径
         int index = 0;
         // Supports initial delimiter.
         if (strings[0].isEmpty()) {

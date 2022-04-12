@@ -237,15 +237,20 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
             assert committedState.get() == null;
             assert localNode != null;
             ClusterState.Builder builder = ClusterState.builder(clusterName);
+            // 初始化ClusterState信息
             ClusterState initialState = builder
                 .blocks(ClusterBlocks.builder()
                     .addGlobalBlock(STATE_NOT_RECOVERED_BLOCK)
                     .addGlobalBlock(noMasterBlockService.getNoMasterBlock()))
-                .nodes(DiscoveryNodes.builder().add(localNode).localNodeId(localNode.getId()))
+                .nodes(DiscoveryNodes.builder().add(localNode).localNodeId(localNode.getId())) // 节点加入自己
                 .build();
             committedState.set(initialState);
             clusterApplier.setInitialState(initialState);
+            // 默认选自己
             nodesFD.setLocalNode(localNode);
+            /**
+             * 把joinThreadControl 的运行标志设为true
+             */
             joinThreadControl.start();
         }
         zenPing.start();
@@ -256,6 +261,9 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
         // start the join thread from a cluster state update. See {@link JoinThreadControl} for details.
         synchronized (stateMutex) {
             // do the join on a different thread, the caller of this method waits for 30s anyhow till it is discovered
+            /**
+             * 启动新的线程进行joinThreadControl操作
+             */
             joinThreadControl.startNewThreadIfNotRunning();
         }
     }
@@ -419,7 +427,10 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
     private void innerJoinCluster() {
         DiscoveryNode masterNode = null;
         final Thread currentThread = Thread.currentThread();
-        nodeJoinController.startElectionContext();
+        nodeJoinController.startElectionContext(); // 选举上下文
+        /**
+         * 一直循环选主，知道选到为止
+         */
         while (masterNode == null && joinThreadControl.joinThreadActive(currentThread)) {
             masterNode = findMaster();
         }
@@ -785,6 +796,7 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
 
     private DiscoveryNode findMaster() {
         logger.trace("starting to ping");
+        // 1. 向seed地址的节点发起ping请求
         List<ZenPing.PingResponse> fullPingResponses = pingAndWait(pingTimeout).toList();
         if (fullPingResponses == null) {
             logger.trace("No full ping responses");
@@ -805,6 +817,7 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
         final DiscoveryNode localNode = transportService.getLocalNode();
 
         // add our selves
+        // 判断是否有当前节点
         assert fullPingResponses.stream().map(ZenPing.PingResponse::node)
             .filter(n -> n.equals(localNode)).findAny().isPresent() == false;
 
@@ -1149,6 +1162,7 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
                     }
                     while (running.get() && joinThreadActive(currentThread)) {
                         try {
+                            // 加入集群！！！
                             innerJoinCluster();
                             return;
                         } catch (Exception e) {

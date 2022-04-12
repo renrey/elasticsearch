@@ -78,6 +78,7 @@ class Elasticsearch extends EnvironmentAwareCommand {
         });
         LogConfigurator.registerErrorListener();
         final Elasticsearch elasticsearch = new Elasticsearch();
+        // 启动
         int status = main(args, elasticsearch, Terminal.DEFAULT);
         if (status != ExitCodes.OK) {
             final String basePath = System.getProperty("es.logs.base_path");
@@ -112,6 +113,8 @@ class Elasticsearch extends EnvironmentAwareCommand {
     }
 
     static int main(final String[] args, final Elasticsearch elasticsearch, final Terminal terminal) throws Exception {
+        // command相关执行
+        // 正常：执行execute方法
         return elasticsearch.main(args, terminal);
     }
 
@@ -147,6 +150,9 @@ class Elasticsearch extends EnvironmentAwareCommand {
         }
 
         try {
+            /**
+             * 初始化！！！
+             */
             init(daemonize, pidFile, quiet, env);
         } catch (NodeValidationException e) {
             throw new UserException(ExitCodes.CONFIG, e.getMessage());
@@ -156,6 +162,9 @@ class Elasticsearch extends EnvironmentAwareCommand {
     void init(final boolean daemonize, final Path pidFile, final boolean quiet, Environment initialEnv)
         throws NodeValidationException, UserException {
         try {
+            /**
+             * 初始化！！！！！！
+             */
             Bootstrap.init(daemonize == false, pidFile, quiet, initialEnv);
         } catch (BootstrapException | RuntimeException e) {
             // format exceptions to the console in a special way

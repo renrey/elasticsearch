@@ -191,11 +191,13 @@ public final class NetworkModule {
 
     public Supplier<Transport> getTransportSupplier() {
         final String name;
+        // Netty4Plugin进行默认配置，所以默认值为netty4
         if (TRANSPORT_TYPE_SETTING.exists(settings)) {
             name = TRANSPORT_TYPE_SETTING.get(settings);
         } else {
             name = TRANSPORT_DEFAULT_TYPE_SETTING.get(settings);
         }
+        // 默认返回Netty4Transport
         final Supplier<Transport> factory = transportFactories.get(name);
         if (factory == null) {
             throw new IllegalStateException("Unsupported transport.type [" + name + "]");

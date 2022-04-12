@@ -401,6 +401,9 @@ public class Node implements Closeable {
 
             final List<ExecutorBuilder<?>> executorBuilders = pluginsService.getExecutorBuilders(settings);
 
+            /**
+             * 创建各种服务需要用到的线程池配置
+             */
             final ThreadPool threadPool = new ThreadPool(settings, executorBuilders.toArray(new ExecutorBuilder[0]));
             resourcesToClose.add(() -> ThreadPool.terminate(threadPool, 10, TimeUnit.SECONDS));
             final ResourceWatcherService resourceWatcherService = new ResourceWatcherService(settings, threadPool);
@@ -420,8 +423,14 @@ public class Node implements Closeable {
             for (final ExecutorBuilder<?> builder : threadPool.builders()) {
                 additionalSettings.addAll(builder.getRegisteredSettings());
             }
+            /**
+             * 根据配置、线程池配置创建NodeClient
+             */
             client = new NodeClient(settings, threadPool);
 
+            /**
+             * 下面开始加载Module、创建Service对象
+             */
             final ScriptModule scriptModule = new ScriptModule(settings, pluginsService.filterPlugins(ScriptPlugin.class));
             final ScriptService scriptService = newScriptService(settings, scriptModule.engines, scriptModule.contexts);
             AnalysisModule analysisModule = new AnalysisModule(this.environment, pluginsService.filterPlugins(AnalysisPlugin.class));
@@ -613,6 +622,9 @@ public class Node implements Closeable {
                 threadPool, pluginsService.filterPlugins(ActionPlugin.class), client, circuitBreakerService, usageService, systemIndices);
             modules.add(actionModule);
 
+            /**
+             * Rest服务
+             */
             final RestController restController = actionModule.getRestController();
             final NetworkModule networkModule = new NetworkModule(settings, false, pluginsService.filterPlugins(NetworkPlugin.class),
                 threadPool, bigArrays, pageCacheRecycler, circuitBreakerService, namedWriteableRegistry, xContentRegistry,
@@ -628,11 +640,13 @@ public class Node implements Closeable {
                 clusterService.addListener(new SystemIndexMetadataUpgradeService(systemIndices, clusterService));
             }
             new TemplateUpgradeService(client, clusterService, threadPool, indexTemplateMetadataUpgraders);
+            // 默认Netty4Transport
             final Transport transport = networkModule.getTransportSupplier().get();
             Set<String> taskHeaders = Stream.concat(
                 pluginsService.filterPlugins(ActionPlugin.class).stream().flatMap(p -> p.getTaskHeaders().stream()),
                 Stream.of(Task.X_OPAQUE_ID)
             ).collect(Collectors.toSet());
+            // 集群通信
             final TransportService transportService = newTransportService(settings, transport, threadPool,
                 networkModule.getTransportInterceptor(), localNodeFactory, settingsModule.getClusterSettings(), taskHeaders);
             final GatewayMetaState gatewayMetaState = new GatewayMetaState();
@@ -662,6 +676,9 @@ public class Node implements Closeable {
                 clusterService.getClusterSettings(), client, threadPool::relativeTimeInMillis, rerouteService);
             clusterInfoService.addListener(diskThresholdMonitor::onNewInfo);
 
+            /**
+             * 集群发现模块
+             */
             final DiscoveryModule discoveryModule = new DiscoveryModule(settings, threadPool, transportService, namedWriteableRegistry,
                 networkService, clusterService.getMasterService(), clusterService.getClusterApplierService(),
                 clusterService.getClusterSettings(), pluginsService.filterPlugins(DiscoveryPlugin.class),
@@ -729,7 +746,7 @@ public class Node implements Closeable {
                     b.bind(ClusterInfoService.class).toInstance(clusterInfoService);
                     b.bind(SnapshotsInfoService.class).toInstance(snapshotsInfoService);
                     b.bind(GatewayMetaState.class).toInstance(gatewayMetaState);
-                    b.bind(Discovery.class).toInstance(discoveryModule.getDiscovery());
+                    b.bind(Discovery.class).toInstance(discoveryModule.getDiscovery()); // 集群发现的实例创建
                     {
                         processRecoverySettings(settingsModule.getClusterSettings(), recoverySettings);
                         b.bind(PeerRecoverySourceService.class).toInstance(new PeerRecoverySourceService(transportService,
@@ -753,6 +770,7 @@ public class Node implements Closeable {
                     b.bind(SystemIndices.class).toInstance(systemIndices);
                 }
             );
+            // 创建注入器，用于获取实例
             injector = modules.createInjector();
 
             // We allocate copies of existing shards by looking for a viable copy of the shard in the cluster and assigning the shard there.
@@ -774,6 +792,9 @@ public class Node implements Closeable {
                     () -> clusterService.localNode().getId(), transportService.getRemoteClusterService(),
                     namedWriteableRegistry);
             logger.debug("initializing HTTP handlers ...");
+            /**
+             * 注册path与对应的Action（Handler）映射到Restcontroller中
+             */
             actionModule.initRestHandlers(() -> clusterService.state().nodes());
             logger.info("initialized");
 
@@ -836,8 +857,10 @@ public class Node implements Closeable {
         }
 
         logger.info("starting ...");
+        // 1. 启动插件
         pluginLifecycleComponents.forEach(LifecycleComponent::start);
 
+        // 2. 启动节点内部的功能服务
         injector.getInstance(MappingUpdatedAction.class).setClient(client);
         injector.getInstance(IndicesService.class).start();
         injector.getInstance(IndicesClusterStateService.class).start();
@@ -848,16 +871,25 @@ public class Node implements Closeable {
         injector.getInstance(FsHealthService.class).start();
         nodeService.getMonitorService().start();
 
+        /**
+         * 3. 启动集群相关的服务
+         */
         final ClusterService clusterService = injector.getInstance(ClusterService.class);
 
+        // 启动NodeConnectionsService：定时检查节点通信连接是否正常
         final NodeConnectionsService nodeConnectionsService = injector.getInstance(NodeConnectionsService.class);
         nodeConnectionsService.start();
         clusterService.setNodeConnectionsService(nodeConnectionsService);
 
+        // 如果是master角色的节点，把GatewayService加入到Listener
         injector.getInstance(GatewayService.class).start();
         Discovery discovery = injector.getInstance(Discovery.class);
+        // 注册当前discovery实例的publish方法到MasterService
         clusterService.getMasterService().setClusterStatePublisher(discovery::publish);
 
+        /**
+         * 启动集群内部通信服务(netty)
+         */
         // Start the transport service now so the publish address will be added to the local disco node in ClusterService
         TransportService transportService = injector.getInstance(TransportService.class);
         transportService.getTaskManager().setTaskResultsService(injector.getInstance(TaskResultsService.class));
@@ -869,16 +901,20 @@ public class Node implements Closeable {
         injector.getInstance(PeerRecoverySourceService.class).start();
 
         // Load (and maybe upgrade) the metadata stored on disk
+        // 加载磁盘中的cluster state
         final GatewayMetaState gatewayMetaState = injector.getInstance(GatewayMetaState.class);
         gatewayMetaState.start(settings(), transportService, clusterService, injector.getInstance(MetaStateService.class),
             injector.getInstance(IndexMetadataVerifier.class), injector.getInstance(MetadataUpgrader.class),
             injector.getInstance(PersistedClusterStateService.class));
         if (Assertions.ENABLED) {
             try {
+                // 新版本
                 if (DiscoveryModule.DISCOVERY_TYPE_SETTING.get(environment.settings()).equals(
                     DiscoveryModule.ZEN_DISCOVERY_TYPE) == false) {
+                    // 需要loadFullState，所有信息
                     assert injector.getInstance(MetaStateService.class).loadFullState().v1().isEmpty();
                 }
+                // 节点元数据信息加载
                 final NodeMetadata nodeMetadata = NodeMetadata.FORMAT.loadLatestState(logger, NamedXContentRegistry.EMPTY,
                     nodeEnvironment.nodeDataPaths());
                 assert nodeMetadata != null;
@@ -892,17 +928,29 @@ public class Node implements Closeable {
         // pass it to the bootstrap checks to allow plugins to enforce certain preconditions based on the recovered state.
         final Metadata onDiskMetadata = gatewayMetaState.getPersistedState().getLastAcceptedState().metadata();
         assert onDiskMetadata != null : "metadata is null but shouldn't"; // this is never null
+        /**
+         * 进行启动检查
+         * @see org.elasticsearch.bootstrap.Bootstrap#setup(boolean, org.elasticsearch.env.Environment)
+         */
         validateNodeBeforeAcceptingRequests(new BootstrapContext(environment, onDiskMetadata), transportService.boundAddress(),
             pluginsService.filterPlugins(Plugin.class).stream()
                 .flatMap(p -> p.getBootstrapChecks().stream()).collect(Collectors.toList()));
 
         clusterService.addStateApplier(transportService.getTaskManager());
         // start after transport service so the local disco is known
+        /**
+         * discovery启动！！！！！---一些对象的创建
+         * @see org.elasticsearch.cluster.coordination.Coordinator#doStart() 新
+         * @see org.elasticsearch.discovery.zen.ZenDiscovery#doStart() 旧
+         */
         discovery.start(); // start before cluster service so that it can set initial state on ClusterApplierService
         clusterService.start();
         assert clusterService.localNode().equals(localNodeFactory.getNode())
             : "clusterService has a different local node than the factory provided";
         transportService.acceptIncomingRequests();
+        /**
+         * 进行与其他节点的发现交互（选举、加入集群）！！！
+         */
         discovery.startInitialJoin();
         final TimeValue initialStateTimeout = DiscoverySettings.INITIAL_STATE_TIMEOUT_SETTING.get(settings());
         configureNodeAndClusterIdStateListener(clusterService);
@@ -941,6 +989,9 @@ public class Node implements Closeable {
             }
         }
 
+        /**
+         * Http服务器启动
+         */
         injector.getInstance(HttpServerTransport.class).start();
 
         if (WRITE_PORTS_FILE_SETTING.get(settings())) {

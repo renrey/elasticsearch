@@ -72,6 +72,7 @@ final class Bootstrap {
 
     /** creates a new instance */
     Bootstrap() {
+        // keepAliveThread:  非守护线程，保证java程序一直执行
         keepAliveThread = new Thread(new Runnable() {
             @Override
             public void run() {
@@ -84,6 +85,7 @@ final class Bootstrap {
         }, "elasticsearch[keepAlive/" + Version.CURRENT + "]");
         keepAliveThread.setDaemon(false);
         // keep this thread alive (non daemon thread) until we shutdown
+        // 注册关闭钩子：keepAliveLatch-1=唤醒keepAliveThread, 使其正常执行完，就是java程序可以正常关闭
         Runtime.getRuntime().addShutdownHook(new Thread() {
             @Override
             public void run() {
@@ -97,6 +99,7 @@ final class Bootstrap {
         final Logger logger = LogManager.getLogger(Bootstrap.class);
 
         // check if the user is running as root, and bail
+        //检查是否root用户
         if (Natives.definitelyRunningAsRoot()) {
             throw new RuntimeException("can not run elasticsearch as root");
         }
@@ -165,6 +168,7 @@ final class Bootstrap {
             throw new BootstrapException(e);
         }
 
+        // 系统资源的控制
         initializeNatives(
                 environment.tmpFile(),
                 BootstrapSettings.MEMORY_LOCK_SETTING.get(settings),
@@ -172,6 +176,9 @@ final class Bootstrap {
                 BootstrapSettings.CTRLHANDLER_SETTING.get(settings));
 
         // initialize probes before the security manager is installed
+        /**
+         * 初始化探针（进程、os、jvm）
+         */
         initializeProbes();
 
         if (addShutdownHook) {
@@ -214,6 +221,9 @@ final class Bootstrap {
             throw new BootstrapException(e);
         }
 
+        /**
+         * 创建node实例！！！
+         */
         node = new Node(environment) {
             @Override
             protected void validateNodeBeforeAcceptingRequests(
@@ -338,6 +348,9 @@ final class Bootstrap {
         // the security manager is installed
         BootstrapInfo.init();
 
+        /**
+         * 创建keepAliveThread:  非守护线程，保证java程序在收到停止前，一直执行
+         */
         INSTANCE = new Bootstrap();
 
         final SecureSettings keystore = loadSecureSettings(initialEnv);
@@ -367,6 +380,7 @@ final class Bootstrap {
             DeprecationLogger.getLogger(Bootstrap.class).deprecate(DeprecationCategory.SETTINGS,
                 "strict_duplicate_detection_setting_removed", message);
         }
+        // -p 参数
         if (environment.pidFile() != null) {
             try {
                 PidFile.create(environment.pidFile(), true);
@@ -387,6 +401,7 @@ final class Bootstrap {
             }
 
             // fail if somebody replaced the lucene jars
+            // 检测lucene版本
             checkLucene();
 
             // install the default uncaught exception handler; must be done before security is
@@ -394,6 +409,12 @@ final class Bootstrap {
             // setDefaultUncaughtExceptionHandler
             Thread.setDefaultUncaughtExceptionHandler(new ElasticsearchUncaughtExceptionHandler());
 
+            /**
+             * 创建node对象
+             * 一些系统的操作：
+             * 1. 探针初始化
+             * 2. 系统资源设置
+             */
             INSTANCE.setup(true, environment);
 
             try {
@@ -403,6 +424,9 @@ final class Bootstrap {
                 throw new BootstrapException(e);
             }
 
+            /**
+             * 启动node！！！
+             */
             INSTANCE.start();
 
             // We don't close stderr if `--quiet` is passed, because that

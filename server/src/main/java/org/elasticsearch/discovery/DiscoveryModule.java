@@ -87,6 +87,7 @@ public class DiscoveryModule {
         final Map<String, Supplier<SeedHostsProvider>> hostProviders = new HashMap<>();
         hostProviders.put("settings", () -> new SettingsBasedSeedHostsProvider(settings, transportService));
         hostProviders.put("file", () -> new FileBasedSeedHostsProvider(configFile));
+        // 初始化所有可选策略
         final Map<String, ElectionStrategy> electionStrategies = new HashMap<>();
         electionStrategies.put(DEFAULT_ELECTION_STRATEGY, ElectionStrategy.DEFAULT_INSTANCE);
         for (DiscoveryPlugin plugin : plugins) {
@@ -106,6 +107,7 @@ public class DiscoveryModule {
             });
         }
 
+        // 获取discovery.seed_providers的配置值
         List<String> seedProviderNames = getSeedProviderNames(settings);
         // for bwc purposes, add settings provider even if not explicitly specified
         if (seedProviderNames.contains("settings") == false) {
@@ -126,6 +128,7 @@ public class DiscoveryModule {
 
         String discoveryType = DISCOVERY_TYPE_SETTING.get(settings);
 
+        // 通过seed_providers的值生成SeedHostsProvider（处理函数）
         final SeedHostsProvider seedHostsProvider = hostsResolver -> {
             final List<TransportAddress> addresses = new ArrayList<>();
             for (SeedHostsProvider provider : filteredSeedProviders) {
@@ -134,11 +137,16 @@ public class DiscoveryModule {
             return Collections.unmodifiableList(addresses);
         };
 
+        // 获取配置好的选举策略
         final ElectionStrategy electionStrategy = electionStrategies.get(ELECTION_STRATEGY_SETTING.get(settings));
         if (electionStrategy == null) {
             throw new IllegalArgumentException("Unknown election strategy " + ELECTION_STRATEGY_SETTING.get(settings));
         }
 
+        /**
+         * 创建Discovery实例：
+         * 根据discovery.type选择，新的为Coordinator，旧的为ZenDiscovery
+         */
         if (ZEN2_DISCOVERY_TYPE.equals(discoveryType) || SINGLE_NODE_DISCOVERY_TYPE.equals(discoveryType)) {
             discovery = new Coordinator(NODE_NAME_SETTING.get(settings),
                 settings, clusterSettings,

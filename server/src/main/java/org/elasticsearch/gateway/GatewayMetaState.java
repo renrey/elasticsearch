@@ -90,11 +90,15 @@ public class GatewayMetaState implements Closeable {
         return getPersistedState().getLastAcceptedState().metadata();
     }
 
+    /**
+     * 加载磁盘中cluster state
+     */
     public void start(Settings settings, TransportService transportService, ClusterService clusterService,
                       MetaStateService metaStateService, IndexMetadataVerifier indexMetadataVerifier,
                       MetadataUpgrader metadataUpgrader, PersistedClusterStateService persistedClusterStateService) {
         assert persistedState.get() == null : "should only start once, but already have " + persistedState.get();
 
+        // 旧版本
         if (DiscoveryModule.DISCOVERY_TYPE_SETTING.get(settings).equals(DiscoveryModule.ZEN_DISCOVERY_TYPE)) {
             // only for tests that simulate mixed Zen1/Zen2 clusters, see Zen1IT
             final Tuple<Manifest, Metadata> manifestClusterStateTuple;
@@ -122,14 +126,18 @@ public class GatewayMetaState implements Closeable {
             return;
         }
 
+        // 新版本
+        // 需要master节点
         if (DiscoveryNode.isMasterNode(settings) || DiscoveryNode.canContainData(settings)) {
             try {
+                // 加载磁盘中状态
                 final PersistedClusterStateService.OnDiskState onDiskState = persistedClusterStateService.loadBestOnDiskState();
 
                 Metadata metadata = onDiskState.metadata;
                 long lastAcceptedVersion = onDiskState.lastAcceptedVersion;
                 long currentTerm = onDiskState.currentTerm;
 
+                // 磁盘没有，就使用旧版本的方式加载状态
                 if (onDiskState.empty()) {
                     assert Version.CURRENT.major <= Version.V_7_0_0.major + 1 :
                         "legacy metadata loader is not needed anymore from v9 onwards";
