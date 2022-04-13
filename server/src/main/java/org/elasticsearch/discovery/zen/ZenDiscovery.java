@@ -427,7 +427,7 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
     private void innerJoinCluster() {
         DiscoveryNode masterNode = null;
         final Thread currentThread = Thread.currentThread();
-        nodeJoinController.startElectionContext(); // 选举上下文
+        nodeJoinController.startElectionContext(); // 创建选举上下文
         /**
          * 一直循环选主，知道选到为止
          */
@@ -465,7 +465,7 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
             );
         } else {
             /**
-             * 选出的节点不是自己
+             * 选出的节点不是自己（自己作为非主节点）
              */
             // process any incoming joins (they will fail because we are not the master)
             nodeJoinController.stopElectionContext(masterNode + " elected");
@@ -510,6 +510,9 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
             return false;
         }
         int joinAttempt = 0; // we retry on illegal state if the master is not yet ready
+        /**
+         * 如果是NotMasterException异常，会一直循环重试
+         */
         while (true) {
             try {
                 logger.trace("joining master {}", masterNode);
@@ -544,6 +547,7 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
             }
 
             try {
+                // 失败重试等待时间:discovery.zen.join_retry_delay, 默认100ms
                 Thread.sleep(this.joinRetryDelay.millis());
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();

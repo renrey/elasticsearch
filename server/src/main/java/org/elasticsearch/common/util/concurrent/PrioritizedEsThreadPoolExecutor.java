@@ -111,9 +111,11 @@ public class PrioritizedEsThreadPoolExecutor extends EsThreadPoolExecutor {
 
     public void execute(Runnable command, final TimeValue timeout, final Runnable timeoutCallback) {
         command = wrapRunnable(command);
+        // 马上执行command
         execute(command);
         if (timeout.nanos() >= 0) {
             if (command instanceof TieBreakingPrioritizedRunnable) {
+                // 定义间隔，执行timeoutCallback
                 ((TieBreakingPrioritizedRunnable) command).scheduleTimeout(timer, timeoutCallback, timeout);
             } else {
                 // We really shouldn't be here. The only way we can get here if somebody created PrioritizedFutureTask

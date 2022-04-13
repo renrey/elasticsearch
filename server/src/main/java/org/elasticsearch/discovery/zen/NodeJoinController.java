@@ -160,10 +160,16 @@ public class NodeJoinController {
      * Note: doesn't do any validation. This should have been done before.
      */
     public synchronized void handleJoinRequest(final DiscoveryNode node, final MembershipAction.JoinCallback callback) {
+        // 选举在进行中
         if (electionContext != null) {
+            /**
+             * 1. 记录当前节点为选自己的
+             * 2.并保存选举后，给对应节点的处理（就是发送响应）
+             */
             electionContext.addIncomingJoin(node, callback);
             checkPendingJoinsAndElectIfNeeded();
         } else {
+            // 选举已经结束
             masterService.submitStateUpdateTask("zen-disco-node-join",
                 new JoinTaskExecutor.Task(node, "no election context"), ClusterStateTaskConfig.build(Priority.URGENT),
                 joinTaskExecutor, new JoinTaskListener(callback, logger));
@@ -173,11 +179,17 @@ public class NodeJoinController {
     /**
      * checks if there is an on going request to become master and if it has enough pending joins. If so, the node will
      * become master via a ClusterState update task.
+     * 足够多join请求后（可以成为主），
      */
     private synchronized void checkPendingJoinsAndElectIfNeeded() {
         assert electionContext != null : "election check requested but no active context";
         final int pendingMasterJoins = electionContext.getPendingMasterJoinsCount();
+        /**
+         * 判断是否足够的join节点
+         *  配置了discovery.zen.minimum_master_nodes的话，join需要达到discovery.zen.minimum_master_nodes-1（自己选作1票）
+         */
         if (electionContext.isEnoughPendingJoins(pendingMasterJoins) == false) {
+            // 不够，无处理
             if (logger.isTraceEnabled()) {
                 logger.trace("not enough joins for election. Got [{}], required [{}]", pendingMasterJoins,
                     electionContext.requiredMasterJoins);
@@ -187,7 +199,11 @@ public class NodeJoinController {
                 logger.trace("have enough joins for election. Got [{}], required [{}]", pendingMasterJoins,
                     electionContext.requiredMasterJoins);
             }
+            /**
+             * 足够join请求，可以成为主！！！
+             */
             electionContext.closeAndBecomeMaster();
+            // 把选举上下文关闭，后面的join请求就不做选举处理
             electionContext = null; // clear this out so future joins won't be accumulated
         }
     }
@@ -223,6 +239,10 @@ public class NodeJoinController {
 
         public synchronized void addIncomingJoin(DiscoveryNode node, MembershipAction.JoinCallback callback) {
             ensureOpen();
+            /**
+             * 等于记录这个节点给自己投票
+             * --- 里面callback只是选举结束后，返回响应给对方的执行
+             */
             joinRequestAccumulator.computeIfAbsent(node, n -> new ArrayList<>()).add(callback);
         }
 
@@ -234,6 +254,10 @@ public class NodeJoinController {
                 hasEnough = false;
             } else {
                 assert callback != null : "requiredMasterJoins is set but not the callback";
+                /**
+                 * 条件：大于等于requiredMasterJoins:
+                 * discovery.zen.minimum_master_nodes -1 (自己当作一票)
+                 */
                 hasEnough = pendingMasterJoins >= requiredMasterJoins;
             }
             return hasEnough;
@@ -241,6 +265,9 @@ public class NodeJoinController {
 
         private Map<JoinTaskExecutor.Task, ClusterStateTaskListener> getPendingAsTasks(String reason) {
             Map<JoinTaskExecutor.Task, ClusterStateTaskListener> tasks = new HashMap<>();
+            /**
+             * 给每个join节点生成通知任务:
+             */
             joinRequestAccumulator.entrySet().stream().forEach(e -> tasks.put(
                 new JoinTaskExecutor.Task(e.getKey(), reason), new JoinTaskListener(e.getValue(), logger)));
             return tasks;
@@ -261,14 +288,26 @@ public class NodeJoinController {
             assert isEnoughPendingJoins(getPendingMasterJoinsCount()) : "becoming a master but pending joins of "
                 + getPendingMasterJoinsCount() + " are not enough. needs [" + requiredMasterJoins + "];";
 
+            //1。 更新选举关闭标志
             innerClose();
 
+            /**
+             * 2. 给每个join生成通知成为主节点的任务：
+             */
             Map<JoinTaskExecutor.Task, ClusterStateTaskListener> tasks = getPendingAsTasks("become master");
             final String source = "zen-disco-elected-as-master ([" + tasks.size() + "] nodes joined)";
 
             // noop listener, the election finished listener determines result
+            /**
+             * 3。 生成BecomeMasterTask 、FinishElectionTask的任务
+             */
             tasks.put(JoinTaskExecutor.newBecomeMasterTask(), (source1, e) -> {});
             tasks.put(JoinTaskExecutor.newFinishElectionTask(), electionFinishedListener);
+            /**
+             * 4. 提交刚刚的任务
+             * 执行
+             * @see JoinTaskExecutor#execute(org.elasticsearch.cluster.ClusterState, java.util.List)
+             */
             masterService.submitStateUpdateTasks(source, tasks, ClusterStateTaskConfig.build(Priority.URGENT), joinTaskExecutor);
         }
 

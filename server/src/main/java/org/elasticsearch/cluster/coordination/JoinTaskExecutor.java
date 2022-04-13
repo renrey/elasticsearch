@@ -111,6 +111,9 @@ public class JoinTaskExecutor implements ClusterStateTaskExecutor<JoinTaskExecut
             // use these joins to try and become the master.
             // Note that we don't have to do any validation of the amount of joining nodes - the commit
             // during the cluster state publishing guarantees that we have enough
+            /**
+             * 当前本节点刚自己任务被选举成主的时候进入，(有isBecomeMasterTask、isFinishElectionTask)
+             */
             newState = becomeMasterAndTrimConflictingNodes(currentState, joiningNodes);
             nodesChanged = true;
         } else if (currentNodes.isLocalNodeElectedMaster() == false) {
@@ -131,6 +134,7 @@ public class JoinTaskExecutor implements ClusterStateTaskExecutor<JoinTaskExecut
         // processing any joins
         Map<String, String> joiniedNodeNameIds = new HashMap<>();
         for (final Task joinTask : joiningNodes) {
+            // 这2种任务到这里无处理
             if (joinTask.isBecomeMasterTask() || joinTask.isFinishElectionTask()) {
                 // noop
             } else if (currentNodes.nodeExistsWithSameRoles(joinTask.node())) {
@@ -149,6 +153,9 @@ public class JoinTaskExecutor implements ClusterStateTaskExecutor<JoinTaskExecut
                     nodesChanged = true;
                     minClusterNodeVersion = Version.min(minClusterNodeVersion, node.getVersion());
                     maxClusterNodeVersion = Version.max(maxClusterNodeVersion, node.getVersion());
+                    /**
+                     * 保存master节点
+                     */
                     if (node.isMasterNode()) {
                         joiniedNodeNameIds.put(node.getName(), node.getId());
                     }

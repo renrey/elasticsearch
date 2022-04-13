@@ -198,13 +198,20 @@ public class MasterService extends AbstractLifecycleComponent {
         logger.debug("executing cluster state update for [{}]", summary);
         final ClusterState previousClusterState = state();
 
+        /**
+         * 当前节点不是主节点处理
+         */
         if (previousClusterState.nodes().isLocalNodeElectedMaster() == false && taskInputs.runOnlyWhenMaster()) {
             logger.debug("failing [{}]: local node is no longer master", summary);
+            // 执行所有task的listener的onNoLongerMaster，提示不是主了
             taskInputs.onNoLongerMaster();
             return;
         }
 
         final long computationStartTime = threadPool.relativeTimeInMillis();
+        /**
+         * 执行task
+         */
         final TaskOutputs taskOutputs = calculateTaskOutputs(taskInputs, previousClusterState);
         taskOutputs.notifyFailedTasks();
         final TimeValue computationTime = getTimeSince(computationStartTime);
@@ -310,6 +317,7 @@ public class MasterService extends AbstractLifecycleComponent {
     }
 
     private TaskOutputs calculateTaskOutputs(TaskInputs taskInputs, ClusterState previousClusterState) {
+        // 执行
         ClusterTasksResult<Object> clusterTasksResult = executeTasks(taskInputs, previousClusterState);
         ClusterState newClusterState = patchVersions(previousClusterState, clusterTasksResult);
         return new TaskOutputs(taskInputs, previousClusterState, newClusterState, getNonFailedTasks(taskInputs, clusterTasksResult),
@@ -688,6 +696,9 @@ public class MasterService extends AbstractLifecycleComponent {
         ClusterTasksResult<Object> clusterTasksResult;
         try {
             List<Object> inputs = taskInputs.updateTasks.stream().map(tUpdateTask -> tUpdateTask.task).collect(Collectors.toList());
+            /**
+             * @see org.elasticsearch.cluster.coordination.JoinTaskExecutor#execute(org.elasticsearch.cluster.ClusterState, java.util.List)
+             */
             clusterTasksResult = taskInputs.executor.execute(previousClusterState, inputs);
             if (previousClusterState != clusterTasksResult.resultingState &&
                 previousClusterState.nodes().isLocalNodeElectedMaster() &&
@@ -784,6 +795,10 @@ public class MasterService extends AbstractLifecycleComponent {
             List<Batcher.UpdateTask> safeTasks = tasks.entrySet().stream()
                 .map(e -> taskBatcher.new UpdateTask(config.priority(), source, e.getKey(), safe(e.getValue(), supplier), executor))
                 .collect(Collectors.toList());
+            // 提交
+            /**
+             * @see TaskBatcher#runIfNotProcessed(org.elasticsearch.cluster.service.TaskBatcher.BatchedTask)
+             */
             taskBatcher.submitTasks(safeTasks, config.timeout());
         } catch (EsRejectedExecutionException e) {
             // ignore cases where we are shutting down..., there is really nothing interesting

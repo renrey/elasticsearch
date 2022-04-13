@@ -47,6 +47,7 @@ public abstract class TaskBatcher {
             return;
         }
         final BatchedTask firstTask = tasks.get(0);
+        // batchingKey是executor（就是Listener)
         assert tasks.stream().allMatch(t -> t.batchingKey == firstTask.batchingKey) :
             "tasks submitted in a batch should share the same batching key: " + tasks;
         // convert to an identity map to check for dups based on task identity
@@ -67,6 +68,8 @@ public abstract class TaskBatcher {
                         Collections.singletonList(existing)) + "] with source [" + duplicateTask.source + "] is already queued");
                 }
             }
+            // 加入到tasksPerBatchingKey中
+            // 第一个task的对应Listener作为key的set
             existingTasks.addAll(tasks);
         }
 
@@ -77,6 +80,7 @@ public abstract class TaskBatcher {
         }
     }
 
+    // 达到timeout间隔执行
     private void onTimeoutInternal(List<? extends BatchedTask> tasks, TimeValue timeout) {
         final ArrayList<BatchedTask> toRemove = new ArrayList<>();
         for (BatchedTask task : tasks) {
@@ -116,12 +120,13 @@ public abstract class TaskBatcher {
             final List<BatchedTask> toExecute = new ArrayList<>();
             final Map<String, List<BatchedTask>> processTasksBySource = new HashMap<>();
             synchronized (tasksPerBatchingKey) {
+                // 获取一起提交的任务
                 LinkedHashSet<BatchedTask> pending = tasksPerBatchingKey.remove(updateTask.batchingKey);
                 if (pending != null) {
                     for (BatchedTask task : pending) {
                         if (task.processed.getAndSet(true) == false) {
                             logger.trace("will process {}", task);
-                            toExecute.add(task);
+                            toExecute.add(task); // 那些任务加入到toExecute
                             processTasksBySource.computeIfAbsent(task.source, s -> new ArrayList<>()).add(task);
                         } else {
                             logger.trace("skipping {}, already processed", task);
@@ -135,7 +140,7 @@ public abstract class TaskBatcher {
                     String tasks = updateTask.describeTasks(entry.getValue());
                     return tasks.isEmpty() ? entry.getKey() : entry.getKey() + "[" + tasks + "]";
                 }).reduce((s1, s2) -> s1 + ", " + s2).orElse("");
-
+                // 执行
                 run(updateTask.batchingKey, toExecute, tasksSummary);
             }
         }
