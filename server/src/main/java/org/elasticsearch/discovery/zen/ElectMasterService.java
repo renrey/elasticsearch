@@ -80,7 +80,10 @@ public class ElectMasterService {
         public static int compare(MasterCandidate c1, MasterCandidate c2) {
             // we explicitly swap c1 and c2 here. the code expects "better" is lower in a sorted
             // list, so if c2 has a higher cluster state version, it needs to come first.
+            // 1. clusterStateVersion高的优先
             int ret = Long.compare(c2.clusterStateVersion, c1.clusterStateVersion);
+            // 2.master节点优先
+            // 3. id小的优先
             if (ret == 0) {
                 ret = compareNodes(c1.getNode(), c2.getNode());
             }
@@ -115,6 +118,7 @@ public class ElectMasterService {
         if (candidates.isEmpty()) {
             return false;
         }
+        // 没开启最小master节点限制
         if (minimumMasterNodes < 1) {
             return true;
         }
@@ -130,6 +134,12 @@ public class ElectMasterService {
     public MasterCandidate electMaster(Collection<MasterCandidate> candidates) {
         assert hasEnoughCandidates(candidates);
         List<MasterCandidate> sortedCandidates = new ArrayList<>(candidates);
+        /**
+         * 选举规则：
+         * 1.clusterStateVersion高的优先
+         * 2. master节点优先
+         * 3. id小优先
+         */
         sortedCandidates.sort(MasterCandidate::compare);
         return sortedCandidates.get(0);
     }
@@ -201,12 +211,14 @@ public class ElectMasterService {
 
     /** master nodes go before other nodes, with a secondary sort by id **/
      private static int compareNodes(DiscoveryNode o1, DiscoveryNode o2) {
+         // master节点优先级更高
         if (o1.isMasterNode() && o2.isMasterNode() == false) {
             return -1;
         }
         if (o1.isMasterNode() == false && o2.isMasterNode()) {
             return 1;
         }
+        // id越小优先级高
         return o1.getId().compareTo(o2.getId());
     }
 }

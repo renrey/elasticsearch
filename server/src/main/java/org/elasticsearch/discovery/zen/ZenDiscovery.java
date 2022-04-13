@@ -432,6 +432,7 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
          * 一直循环选主，知道选到为止
          */
         while (masterNode == null && joinThreadControl.joinThreadActive(currentThread)) {
+            // 选举主节点
             masterNode = findMaster();
         }
 
@@ -463,10 +464,14 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
 
             );
         } else {
+            /**
+             * 选出的节点不是自己
+             */
             // process any incoming joins (they will fail because we are not the master)
             nodeJoinController.stopElectionContext(masterNode + " elected");
 
             // send join request
+            // 1. 发送join请求
             final boolean success = joinElectedMaster(masterNode);
 
             synchronized (stateMutex) {
@@ -508,6 +513,12 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
         while (true) {
             try {
                 logger.trace("joining master {}", masterNode);
+                /**
+                 * 发送join请求，并堵塞等待！！！
+                 * 处理：
+                 * @see MembershipAction.JoinRequestRequestHandler#messageReceived(org.elasticsearch.discovery.zen.MembershipAction.JoinRequest, org.elasticsearch.transport.TransportChannel, org.elasticsearch.tasks.Task)
+                 * 注意：这其中对方会发送ValidateJoin请求回来，校验请求是否正确
+                 */
                 membership.sendJoinRequestBlocking(masterNode, transportService.getLocalNode(), joinTimeout);
                 return true;
             } catch (Exception e) {
@@ -778,25 +789,37 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
                 JoinTaskExecutor.ensureMajorVersionBarrier(node.getVersion(), state.getNodes().getMinNodeVersion());
             }
             // try and connect to the node, if it fails, we can raise an exception back to the client...
+            // 1. 保证该节点连接
             transportService.connectToNode(node);
 
             // validate the join request, will throw a failure if it fails, which will get back to the
             // node calling the join request
             try {
+                /**
+                 * 2. 发送ValidateJoin给对方，等待
+                 * 处理：
+                 * @see MembershipAction.ValidateJoinRequestRequestHandler#messageReceived(org.elasticsearch.cluster.coordination.ValidateJoinRequest, org.elasticsearch.transport.TransportChannel, org.elasticsearch.tasks.Task)
+                 */
                 membership.sendValidateJoinRequestBlocking(node, state, joinTimeout);
             } catch (Exception e) {
+                // 失败返回异常
                 logger.warn(() -> new ParameterizedMessage("failed to validate incoming join request from node [{}]", node),
                     e);
                 callback.onFailure(new IllegalStateException("failure when sending a validation request to node", e));
                 return;
             }
+            /**
+             * 3. ValidateJoin成功后，真正处理Join请求
+             */
             nodeJoinController.handleJoinRequest(node, callback);
         }
     }
 
     private DiscoveryNode findMaster() {
         logger.trace("starting to ping");
-        // 1. 向seed地址的节点发起ping请求
+        /**
+         * 1. 向seed地址的节点发起ping请求
+         */
         List<ZenPing.PingResponse> fullPingResponses = pingAndWait(pingTimeout).toList();
         if (fullPingResponses == null) {
             logger.trace("No full ping responses");
@@ -821,11 +844,16 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
         assert fullPingResponses.stream().map(ZenPing.PingResponse::node)
             .filter(n -> n.equals(localNode)).findAny().isPresent() == false;
 
+        // 响应中加入当前节点的
         fullPingResponses.add(new ZenPing.PingResponse(localNode, null, this.clusterState()));
 
         // filter responses
+        // 如果开启了discovery.zen.master_election.ignore_non_master_pings, 过滤掉非master节点的响应
         final List<ZenPing.PingResponse> pingResponses = filterPingResponses(fullPingResponses, masterElectionIgnoreNonMasters, logger);
 
+        /**
+         * 2. 读取每个节点的当前主节点，汇总到activeMasters（当前集群活跃的主节点）
+         */
         List<DiscoveryNode> activeMasters = new ArrayList<>();
         for (ZenPing.PingResponse pingResponse : pingResponses) {
             // We can't include the local node in pingMasters list, otherwise we may up electing ourselves without
@@ -836,6 +864,9 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
         }
 
         // nodes discovered during pinging
+        /**
+         * 3. 汇总当前获取所有的master节点到masterCandidates(角色为master的节点)
+         */
         List<ElectMasterService.MasterCandidate> masterCandidates = new ArrayList<>();
         for (ZenPing.PingResponse pingResponse : pingResponses) {
             if (pingResponse.node().isMasterNode()) {
@@ -843,8 +874,14 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
             }
         }
 
+        // 当前集群没有主节点，需要选举
         if (activeMasters.isEmpty()) {
+            // 如果开启最小master节点数量限制，就进行判断
             if (electMaster.hasEnoughCandidates(masterCandidates)) {
+                /**
+                 * 从候选集选举主节点
+                 * @see ElectMasterService#electMaster(java.util.Collection)
+                 */
                 final ElectMasterService.MasterCandidate winner = electMaster.electMaster(masterCandidates);
                 logger.trace("candidate {} won election", winner);
                 return winner.getNode();
@@ -855,9 +892,15 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
                 return null;
             }
         } else {
+            /**
+             * 集群有主节点
+             */
             assert activeMasters.contains(localNode) == false :
                 "local node should never be elected as master when other nodes indicate an active master";
             // lets tie break between discovered nodes
+            /**
+             * 从已有主节点中，选举出（规则一样）
+             */
             return electMaster.tieBreakActiveMasters(activeMasters);
         }
     }
@@ -1032,6 +1075,7 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
     private class MembershipListener implements MembershipAction.MembershipListener {
         @Override
         public void onJoin(DiscoveryNode node, MembershipAction.JoinCallback callback) {
+            // 处理
             handleJoinRequest(node, ZenDiscovery.this.clusterState(), callback);
         }
 
