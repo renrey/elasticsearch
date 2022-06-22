@@ -76,7 +76,9 @@ public class NodeJoinController {
      **/
     public void waitToBeElectedAsMaster(int requiredMasterJoins, TimeValue timeValue, final ElectionCallback callback) {
         final CountDownLatch done = new CountDownLatch(1);
+
         final ElectionCallback wrapperCallback = new ElectionCallback() {
+            // 当过半节点join，完成发布集群状态后触发，等于唤醒当前线程
             @Override
             public void onElectedAsMaster(ClusterState state) {
                 done.countDown();
@@ -98,11 +100,16 @@ public class NodeJoinController {
             synchronized (this) {
                 assert electionContext != null : "waitToBeElectedAsMaster is called we are not accumulating joins";
                 myElectionContext = electionContext;
+                // 设置等待join的配置
                 electionContext.onAttemptToBeElected(requiredMasterJoins, wrapperCallback);
+                // 判断一次是否到达成为commit阶段
                 checkPendingJoinsAndElectIfNeeded();
             }
 
             try {
+                /**
+                 * 等待过半join，默认超时：30s
+                 */
                 if (done.await(timeValue.millis(), TimeUnit.MILLISECONDS)) {
                     // callback handles everything
                     return;
@@ -114,6 +121,9 @@ public class NodeJoinController {
                 final int pendingNodes = myElectionContext.getPendingMasterJoinsCount();
                 logger.trace("timed out waiting to be elected. waited [{}]. pending master node joins [{}]", timeValue, pendingNodes);
             }
+            /**
+             * 等待失败
+             */
             failContextIfNeeded(myElectionContext, "timed out waiting to be elected");
         } catch (Exception e) {
             logger.error("unexpected failure while waiting for incoming joins", e);
@@ -302,9 +312,12 @@ public class NodeJoinController {
              * 3。 生成BecomeMasterTask 、FinishElectionTask的任务
              */
             tasks.put(JoinTaskExecutor.newBecomeMasterTask(), (source1, e) -> {});
+            /**
+             * 这里的listener会唤醒当前节点对应的选举线程
+             */
             tasks.put(JoinTaskExecutor.newFinishElectionTask(), electionFinishedListener);
             /**
-             * 4. 提交刚刚的任务
+             * 4. 提交集群状态更新(发布)的任务
              * 执行
              * @see JoinTaskExecutor#execute(org.elasticsearch.cluster.ClusterState, java.util.List)
              */

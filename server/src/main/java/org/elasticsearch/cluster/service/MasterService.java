@@ -22,6 +22,7 @@ import org.elasticsearch.cluster.ClusterStateTaskExecutor;
 import org.elasticsearch.cluster.ClusterStateTaskExecutor.ClusterTasksResult;
 import org.elasticsearch.cluster.ClusterStateTaskListener;
 import org.elasticsearch.cluster.coordination.ClusterStatePublisher;
+import org.elasticsearch.cluster.coordination.Coordinator;
 import org.elasticsearch.cluster.coordination.FailedToCommitClusterStateException;
 import org.elasticsearch.cluster.metadata.Metadata;
 import org.elasticsearch.cluster.metadata.ProcessClusterEventTimeoutException;
@@ -210,19 +211,21 @@ public class MasterService extends AbstractLifecycleComponent {
 
         final long computationStartTime = threadPool.relativeTimeInMillis();
         /**
-         * 执行task
+         * 1。 执行task
          */
         final TaskOutputs taskOutputs = calculateTaskOutputs(taskInputs, previousClusterState);
-        taskOutputs.notifyFailedTasks();
+        taskOutputs.notifyFailedTasks(); // 通知失败的任务
         final TimeValue computationTime = getTimeSince(computationStartTime);
         logExecutionTime(computationTime, "compute cluster state update", summary);
 
+        // 集群state没发生变化
         if (taskOutputs.clusterStateUnchanged()) {
             final long notificationStartTime = threadPool.relativeTimeInMillis();
-            taskOutputs.notifySuccessfulTasksOnUnchangedClusterState();
+            taskOutputs.notifySuccessfulTasksOnUnchangedClusterState(); // 直接通知成功（如选举返回响应）
             final TimeValue executionTime = getTimeSince(notificationStartTime);
             logExecutionTime(executionTime, "notify listeners on unchanged cluster state", summary);
         } else {
+            // 集群状态发送变化
             final ClusterState newClusterState = taskOutputs.newClusterState;
             if (logger.isTraceEnabled()) {
                 logger.trace("cluster state updated, source [{}]\n{}", summary, newClusterState);
@@ -243,6 +246,9 @@ public class MasterService extends AbstractLifecycleComponent {
                 }
 
                 logger.debug("publishing cluster state version [{}]", newClusterState.version());
+                /**
+                 * 2。发布新的ClusterState！！！
+                 */
                 publish(clusterChangedEvent, taskOutputs, publicationStartTime);
             } catch (Exception e) {
                 handleException(summary, publicationStartTime, newClusterState, e);
@@ -261,11 +267,19 @@ public class MasterService extends AbstractLifecycleComponent {
                 return isMasterUpdateThread() || super.blockingAllowed();
             }
         };
+        /**
+         * 发布执行
+         * @see org.elasticsearch.discovery.zen.ZenDiscovery#publish(org.elasticsearch.cluster.ClusterChangedEvent, org.elasticsearch.action.ActionListener, org.elasticsearch.cluster.coordination.ClusterStatePublisher.AckListener)
+         * @see Coordinator#publish(org.elasticsearch.cluster.ClusterChangedEvent, org.elasticsearch.action.ActionListener, org.elasticsearch.cluster.coordination.ClusterStatePublisher.AckListener)
+         */
         clusterStatePublisher.publish(clusterChangedEvent, fut, taskOutputs.createAckListener(threadPool, clusterChangedEvent.state()));
 
         // indefinitely wait for publication to complete
         try {
             FutureUtils.get(fut);
+            /**
+             * 发布新状态成功，后调用listner（返回join请求响应）
+             */
             onPublicationSuccess(clusterChangedEvent, taskOutputs);
         } catch (Exception e) {
             onPublicationFailed(clusterChangedEvent, taskOutputs, startTimeMillis, e);
@@ -274,6 +288,7 @@ public class MasterService extends AbstractLifecycleComponent {
 
     void onPublicationSuccess(ClusterChangedEvent clusterChangedEvent, TaskOutputs taskOutputs) {
         final long notificationStartTime = threadPool.relativeTimeInMillis();
+        // listner调用
         taskOutputs.processedDifferentClusterState(clusterChangedEvent.previousState(), clusterChangedEvent.state());
 
         try {
@@ -319,6 +334,7 @@ public class MasterService extends AbstractLifecycleComponent {
     private TaskOutputs calculateTaskOutputs(TaskInputs taskInputs, ClusterState previousClusterState) {
         // 执行
         ClusterTasksResult<Object> clusterTasksResult = executeTasks(taskInputs, previousClusterState);
+        // 升级版本
         ClusterState newClusterState = patchVersions(previousClusterState, clusterTasksResult);
         return new TaskOutputs(taskInputs, previousClusterState, newClusterState, getNonFailedTasks(taskInputs, clusterTasksResult),
             clusterTasksResult.executionResults);
@@ -697,6 +713,7 @@ public class MasterService extends AbstractLifecycleComponent {
         try {
             List<Object> inputs = taskInputs.updateTasks.stream().map(tUpdateTask -> tUpdateTask.task).collect(Collectors.toList());
             /**
+             * 处理这批任务
              * @see org.elasticsearch.cluster.coordination.JoinTaskExecutor#execute(org.elasticsearch.cluster.ClusterState, java.util.List)
              */
             clusterTasksResult = taskInputs.executor.execute(previousClusterState, inputs);

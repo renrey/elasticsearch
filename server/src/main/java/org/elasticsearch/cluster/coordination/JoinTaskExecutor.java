@@ -114,6 +114,7 @@ public class JoinTaskExecutor implements ClusterStateTaskExecutor<JoinTaskExecut
             /**
              * 当前本节点刚自己任务被选举成主的时候进入，(有isBecomeMasterTask、isFinishElectionTask)
              */
+            // 生成把自己成为主节点的ClusterState
             newState = becomeMasterAndTrimConflictingNodes(currentState, joiningNodes);
             nodesChanged = true;
         } else if (currentNodes.isLocalNodeElectedMaster() == false) {
@@ -149,12 +150,13 @@ public class JoinTaskExecutor implements ClusterStateTaskExecutor<JoinTaskExecut
                     // we do this validation quite late to prevent race conditions between nodes joining and importing dangling indices
                     // we have to reject nodes that don't support all indices we have in this cluster
                     ensureIndexCompatibility(node.getVersion(), currentState.getMetadata());
+                    // ClusterState中保存这个节点
                     nodesBuilder.add(node);
                     nodesChanged = true;
                     minClusterNodeVersion = Version.min(minClusterNodeVersion, node.getVersion());
                     maxClusterNodeVersion = Version.max(maxClusterNodeVersion, node.getVersion());
                     /**
-                     * 保存master节点
+                     * joiniedNodeNameIds保存master节点
                      */
                     if (node.isMasterNode()) {
                         joiniedNodeNameIds.put(node.getName(), node.getId());
@@ -168,10 +170,13 @@ public class JoinTaskExecutor implements ClusterStateTaskExecutor<JoinTaskExecut
         }
 
         if (nodesChanged) {
+            // BatchedRerouteService
+            // 提交重新生成路由表的任务
             rerouteService.reroute("post-join reroute", Priority.HIGH, ActionListener.wrap(
                 r -> logger.trace("post-join reroute completed"),
                 e -> logger.debug("post-join reroute failed", e)));
 
+            // master节点有无
             if (joiniedNodeNameIds.isEmpty() == false) {
                 Set<CoordinationMetadata.VotingConfigExclusion> currentVotingConfigExclusions = currentState.getVotingConfigExclusions();
                 Set<CoordinationMetadata.VotingConfigExclusion> newVotingConfigExclusions = currentVotingConfigExclusions.stream()
@@ -196,7 +201,7 @@ public class JoinTaskExecutor implements ClusterStateTaskExecutor<JoinTaskExecut
                                                                                             .metadata(newMetadata).build()));
                 }
             }
-
+            // 最终生成新的ClusterState
             return results.build(allocationService.adaptAutoExpandReplicas(newState.nodes(nodesBuilder).build()));
         } else {
             // we must return a new cluster state instance to force publishing. This is important
@@ -205,10 +210,13 @@ public class JoinTaskExecutor implements ClusterStateTaskExecutor<JoinTaskExecut
         }
     }
 
+    // 1. 本地信息中，把本节点设为主节点
+    // 2. 清理冲突节点
     protected ClusterState.Builder becomeMasterAndTrimConflictingNodes(ClusterState currentState, List<Task> joiningNodes) {
         assert currentState.nodes().getMasterNodeId() == null : currentState;
         DiscoveryNodes currentNodes = currentState.nodes();
         DiscoveryNodes.Builder nodesBuilder = DiscoveryNodes.builder(currentNodes);
+        // set 主节点 = 自己
         nodesBuilder.masterNodeId(currentState.nodes().getLocalNodeId());
 
         for (final Task joinTask : joiningNodes) {
@@ -217,10 +225,12 @@ public class JoinTaskExecutor implements ClusterStateTaskExecutor<JoinTaskExecut
             } else {
                 final DiscoveryNode joiningNode = joinTask.node();
                 final DiscoveryNode nodeWithSameId = nodesBuilder.get(joiningNode.getId());
+                // 清理本地中已记录的节点中，与join节点相同id的
                 if (nodeWithSameId != null && nodeWithSameId.equals(joiningNode) == false) {
                     logger.debug("removing existing node [{}], which conflicts with incoming join from [{}]", nodeWithSameId, joiningNode);
                     nodesBuilder.remove(nodeWithSameId.getId());
                 }
+                // 相同地址清除
                 final DiscoveryNode nodeWithSameAddress = currentNodes.findByAddress(joiningNode.getAddress());
                 if (nodeWithSameAddress != null && nodeWithSameAddress.equals(joiningNode) == false) {
                     logger.debug("removing existing node [{}], which conflicts with incoming join from [{}]", nodeWithSameAddress,
@@ -239,6 +249,7 @@ public class JoinTaskExecutor implements ClusterStateTaskExecutor<JoinTaskExecut
             .minimumMasterNodesOnPublishingMaster(minimumMasterNodesOnLocalNode)
             .build();
         logger.trace("becomeMasterAndTrimConflictingNodes: {}", tmpState.nodes());
+        // 清除allocation的缓存？
         allocationService.cleanCaches();
         tmpState = PersistentTasksCustomMetadata.disassociateDeadNodes(tmpState);
         return ClusterState.builder(allocationService.disassociateDeadNodes(tmpState, false, "removed dead nodes on election"));

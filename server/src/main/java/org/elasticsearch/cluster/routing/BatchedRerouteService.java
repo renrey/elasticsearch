@@ -35,6 +35,9 @@ public class BatchedRerouteService implements RerouteService {
     private static final String CLUSTER_UPDATE_TASK_SOURCE = "cluster_reroute";
 
     private final ClusterService clusterService;
+    /**
+     * @see org.elasticsearch.cluster.routing.allocation.AllocationService#reroute(org.elasticsearch.cluster.ClusterState, java.lang.String)
+     */
     private final BiFunction<ClusterState, String, ClusterState> reroute;
 
     private final Object mutex = new Object();
@@ -57,6 +60,7 @@ public class BatchedRerouteService implements RerouteService {
     public final void reroute(String reason, Priority priority, ActionListener<ClusterState> listener) {
         final List<ActionListener<ClusterState>> currentListeners;
         synchronized (mutex) {
+            // 作用：加入listener到pendingRerouteListeners
             if (pendingRerouteListeners != null) {
                 if (priority.sameOrAfter(pendingTaskPriority)) {
                     logger.trace("already has pending reroute at priority [{}], adding [{}] with priority [{}] to batch",
@@ -82,6 +86,7 @@ public class BatchedRerouteService implements RerouteService {
             }
         }
         try {
+            // 提交集群状态更新任务: reroute相关
             clusterService.submitStateUpdateTask(CLUSTER_UPDATE_TASK_SOURCE + "(" + reason + ")",
                 new ClusterStateUpdateTask(priority) {
 
@@ -98,6 +103,10 @@ public class BatchedRerouteService implements RerouteService {
                         }
                         if (currentListenersArePending) {
                             logger.trace("performing batched reroute [{}]", reason);
+                            /**
+                             * 重新生成路由表
+                             * @see  org.elasticsearch.cluster.routing.allocation.AllocationService#reroute(org.elasticsearch.cluster.ClusterState, java.lang.String)
+                             */
                             return reroute.apply(currentState, reason);
                         } else {
                             logger.trace("batched reroute [{}] was promoted", reason);

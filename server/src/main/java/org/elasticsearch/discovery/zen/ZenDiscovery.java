@@ -326,8 +326,10 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
                 throw new FailedToCommitClusterStateException("state was mutated while calculating new CS update");
             }
 
+            // 1. 加入状态队列
             pendingStatesQueue.addPending(newState);
 
+            // 2. 发布操作
             publishClusterState.publish(clusterChangedEvent, electMaster.minimumMasterNodes(), ackListener);
         } catch (FailedToCommitClusterStateException t) {
             // cluster service logs a WARN message
@@ -347,6 +349,7 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
 
         final DiscoveryNode localNode = newState.getNodes().getLocalNode();
         final AtomicBoolean processedOrFailed = new AtomicBoolean();
+        // 更新listenr
         pendingStatesQueue.markAsCommitted(newState.stateUUID(),
             new PendingClusterStatesQueue.StateProcessedListener() {
                 @Override
@@ -441,9 +444,13 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
             return;
         }
 
+        // 自己是主节点
         if (transportService.getLocalNode().equals(masterNode)) {
             final int requiredJoins = Math.max(0, electMaster.minimumMasterNodes() - 1); // we count as one
             logger.debug("elected as master, waiting for incoming joins ([{}] needed)", requiredJoins);
+            /**
+             *
+             */
             nodeJoinController.waitToBeElectedAsMaster(requiredJoins, masterElectionWaitForJoinsTimeout,
                     new NodeJoinController.ElectionCallback() {
                         @Override
@@ -471,10 +478,11 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
             nodeJoinController.stopElectionContext(masterNode + " elected");
 
             // send join request
-            // 1. 发送join请求
+            // 1. 发送join请求，等待主节点响应（主节点过半等待、发布新状态）
             final boolean success = joinElectedMaster(masterNode);
 
             synchronized (stateMutex) {
+                // 集群加入成功（目标主节点就是集群当前主节点）
                 if (success) {
                     DiscoveryNode currentMasterNode = this.clusterState().getNodes().getMasterNode();
                     if (currentMasterNode == null) {
@@ -482,13 +490,20 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
                         // a valid master.
                         logger.debug("no master node is set, despite of join request completing. retrying pings.");
                         joinThreadControl.markThreadAsDoneAndStartNew(currentThread);
+                        /**
+                         * 当前节点的内存记录的状态的主节点 != 这次join请求的主节点
+                         */
                     } else if (currentMasterNode.equals(masterNode) == false) {
                         // update cluster state
+                        // 进行rejoin
                         joinThreadControl.stopRunningThreadAndRejoin("master_switched_while_finalizing_join");
                     }
-
+                    // 正常
                     joinThreadControl.markThreadAsDone(currentThread);
                 } else {
+                    /**
+                     * 加入失败，创建创建线程重新进行join选举操作
+                     */
                     // failed to join. Try again...
                     joinThreadControl.markThreadAsDoneAndStartNew(currentThread);
                 }
@@ -1020,7 +1035,9 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
 
     @Override
     public void onIncomingClusterState(ClusterState incomingState) {
+        // 校验
         validateIncomingState(logger, incomingState, committedState.get());
+        // 放入队列，待读取更新
         pendingStatesQueue.addPending(incomingState);
     }
 

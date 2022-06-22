@@ -885,6 +885,7 @@ public class Node implements Closeable {
         injector.getInstance(GatewayService.class).start();
         Discovery discovery = injector.getInstance(Discovery.class);
         // 注册当前discovery实例的publish方法到MasterService
+        // 集群状态变更发布使用这个方法
         clusterService.getMasterService().setClusterStatePublisher(discovery::publish);
 
         /**

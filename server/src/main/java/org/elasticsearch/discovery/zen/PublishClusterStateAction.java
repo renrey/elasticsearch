@@ -127,10 +127,14 @@ public class PublishClusterStateAction {
         final Map<Version, BytesReference> serializedDiffs;
         final boolean sendFullVersion;
         try {
+            /**
+             * 1。 初始化发布相关的信息
+             */
             nodes = clusterChangedEvent.state().nodes();
             nodesToPublishTo = new HashSet<>(nodes.getSize());
             DiscoveryNode localNode = nodes.getLocalNode();
             final int totalMasterNodes = nodes.getMasterNodes().size();
+            // 需要发布的目标节点就是当前状态中已有的节点
             for (final DiscoveryNode node : nodes) {
                 if (node.equals(localNode) == false) {
                     nodesToPublishTo.add(node);
@@ -144,11 +148,14 @@ public class PublishClusterStateAction {
             // sadly this is not water tight as it may that a failed diff based publishing to a node
             // will cause a full serialization based on an older version, which may fail after the
             // change has been committed.
+            // 信息序列化
             buildDiffAndSerializeStates(clusterChangedEvent.state(), clusterChangedEvent.previousState(),
                     nodesToPublishTo, sendFullVersion, serializedStates, serializedDiffs);
 
+            // 等待收到响应的处理Handler
             final BlockingClusterStatePublishResponseHandler publishResponseHandler =
                 new AckClusterStatePublishResponseHandler(nodesToPublishTo, ackListener);
+            // 生成发送信息的对象
             sendingController = new SendingController(clusterChangedEvent.state(), minMasterNodes,
                 totalMasterNodes, publishResponseHandler);
         } catch (Exception e) {
@@ -156,6 +163,9 @@ public class PublishClusterStateAction {
         }
 
         try {
+            /**
+             *2。 执行发布！！！！！
+             */
             innerPublish(clusterChangedEvent, nodesToPublishTo, sendingController, ackListener, sendFullVersion, serializedStates,
                 serializedDiffs);
         } catch (FailedToCommitClusterStateException t) {
@@ -182,17 +192,24 @@ public class PublishClusterStateAction {
 
         final long publishingStartInNanos = System.nanoTime();
 
+        /**
+         * 对每个目标节点都发送请求：
+         * 增量发送：有开启增量开关，并且是包含上个state版本的节点
+         */
         for (final DiscoveryNode node : nodesToPublishTo) {
             // try and serialize the cluster state once (or per version), so we don't serialize it
             // per node when we send it over the wire, compress it while we are at it...
             // we don't send full version if node didn't exist in the previous version of cluster state
+            // 全量
             if (sendFullVersion || previousState.nodes().nodeExists(node) == false) {
                 sendFullClusterState(clusterState, serializedStates, node, publishTimeout, sendingController);
             } else {
+                // 增量
                 sendClusterStateDiff(clusterState, serializedDiffs, serializedStates, node, publishTimeout, sendingController);
             }
         }
 
+        // 等待到达commit阶段
         sendingController.waitForCommit(discoverySettings.getCommitTimeout());
 
         final long commitTime = System.nanoTime() - publishingStartInNanos;
@@ -281,6 +298,10 @@ public class PublishClusterStateAction {
                                         final boolean sendDiffs, final Map<Version, BytesReference> serializedStates) {
         try {
 
+            /**
+             * 对方处理：
+             * @see SendClusterStateRequestHandler#messageReceived(org.elasticsearch.transport.BytesTransportRequest, org.elasticsearch.transport.TransportChannel, org.elasticsearch.tasks.Task)
+             */
             transportService.sendRequest(node, SEND_ACTION_NAME,
                     new BytesTransportRequest(bytes, node.getVersion()),
                     STATE_REQUEST_OPTIONS,
@@ -292,6 +313,7 @@ public class PublishClusterStateAction {
                                 logger.debug("node {} responded for cluster state [{}] (took longer than [{}])", node,
                                     clusterState.version(), publishTimeout);
                             }
+                            // 收到响应后处理
                             sendingController.onNodeSendAck(node);
                         }
 
@@ -316,6 +338,10 @@ public class PublishClusterStateAction {
         try {
             logger.trace("sending commit for cluster state (uuid: [{}], version [{}]) to [{}]",
                 clusterState.stateUUID(), clusterState.version(), node);
+            /**
+             * 处理
+             * @see CommitClusterStateRequestHandler#messageReceived(org.elasticsearch.discovery.zen.PublishClusterStateAction.CommitClusterStateRequest, org.elasticsearch.transport.TransportChannel, org.elasticsearch.tasks.Task)
+             */
             transportService.sendRequest(node, COMMIT_ACTION_NAME,
                     new CommitClusterStateRequest(clusterState.stateUUID()),
                     STATE_REQUEST_OPTIONS,
@@ -326,6 +352,10 @@ public class PublishClusterStateAction {
                             if (sendingController.getPublishingTimedOut()) {
                                 logger.debug("node {} responded to cluster state commit [{}]", node, clusterState.version());
                             }
+                            /**
+                             * 直接使用handler
+                             * @see AckClusterStatePublishResponseHandler
+                             */
                             sendingController.getPublishResponseHandler().onResponse(node);
                         }
 
@@ -380,12 +410,14 @@ public class PublishClusterStateAction {
                 in.setVersion(request.version());
                 // If true we received full cluster state - otherwise diffs
                 if (in.readBoolean()) {
+                    // 全量
                     incomingState = ClusterState.readFrom(in, transportService.getLocalNode());
                     fullClusterStateReceivedCount.incrementAndGet();
                     logger.debug("received full cluster state version [{}] with size [{}]", incomingState.version(),
                         request.bytes().length());
                 } else if (lastSeenClusterState != null) {
                     Diff<ClusterState> diff = ClusterState.readDiffFrom(in, lastSeenClusterState.nodes().getLocalNode());
+                    // 增量处理
                     incomingState = diff.apply(lastSeenClusterState);
                     compatibleClusterStateDiffReceivedCount.incrementAndGet();
                     logger.debug("received diff cluster state version [{}] with uuid [{}], diff size [{}]",
@@ -403,6 +435,10 @@ public class PublishClusterStateAction {
             } finally {
                 IOUtils.close(in);
             }
+            /**
+             * 1. 校验state是否可以
+             * 2. 放入pendingStatesQueue中，等待更新
+             */
             incomingClusterStateListener.onIncomingClusterState(incomingState);
             lastSeenClusterState = incomingState;
         }
@@ -416,6 +452,7 @@ public class PublishClusterStateAction {
             public void onResponse(Void ignore) {
                 try {
                     // send a response to the master to indicate that this cluster state has been processed post committing it.
+                    // 直接响应
                     channel.sendResponse(TransportResponse.Empty.INSTANCE);
                 } catch (Exception e) {
                     logger.debug("failed to send response on cluster state processed", e);
@@ -514,6 +551,7 @@ public class PublishClusterStateAction {
         public void waitForCommit(TimeValue commitTimeout) {
             boolean timedout = false;
             try {
+                // 等待commit阶段
                 timedout = committedOrFailedLatch.await(commitTimeout.millis(), TimeUnit.MILLISECONDS) == false;
             } catch (InterruptedException e) {
                 // the commit check bellow will either translate to an exception or we are committed and we can safely continue
@@ -533,14 +571,26 @@ public class PublishClusterStateAction {
         }
 
         public synchronized void onNodeSendAck(DiscoveryNode node) {
+            // 已经commit
             if (committed) {
+                /**
+                 * 当前在commit阶段：
+                 * 直接发送commit请求给对方
+                 */
                 assert sendAckedBeforeCommit.isEmpty();
                 sendCommitToNode(node, clusterState, this);
             } else if (committedOrFailed()) {
                 logger.trace("ignoring ack from [{}] for cluster state version [{}]. already failed", node, clusterState.version());
             } else {
+                /**
+                 * state当前未在commit阶段
+                 * 1. sendAckedBeforeCommit记录当前节点，属于已经收到发布的节点
+                 * 2. 如果是master节点，判断是否到达commit标准，达到就更新状态、发送commit请求
+                 * commit条件：ack的master数量（包含自己） > discovery.zen.minimum_master_nodes
+                 */
                 // we're still waiting
                 sendAckedBeforeCommit.add(node);
+                // master节点才能算进行commit的校验
                 if (node.isMasterNode()) {
                     checkForCommitOrFailIfNoPending(node);
                 }
@@ -558,9 +608,15 @@ public class PublishClusterStateAction {
         private synchronized void checkForCommitOrFailIfNoPending(DiscoveryNode masterNode) {
             logger.trace("master node {} acked cluster state version [{}]. processing ... (current pending [{}], needed [{}])",
                     masterNode, clusterState.version(), pendingMasterNodes, neededMastersToCommit);
+            // 需要的数量-1
             neededMastersToCommit--;
+            // 标准：ack master数量 （包含自己）> discovery.zen.minimum_master_nodes
             if (neededMastersToCommit == 0) {
+                // 达到标准，更新状态
                 if (markAsCommitted()) {
+                    /**
+                     * 对每个已经收到发布的节点，发送commit请求
+                     */
                     for (DiscoveryNode nodeToCommit : sendAckedBeforeCommit) {
                         sendCommitToNode(nodeToCommit, clusterState, this);
                     }
