@@ -127,6 +127,10 @@ public class TaskManager implements ClusterStateApplier {
                 headers.put(key, httpHeader);
             }
         }
+        /**
+         * 创建Task对象：
+         * 1。 自增生成task的id
+         */
         Task task = request.createTask(taskIdGenerator.incrementAndGet(), type, action, request.getParentTask(), headers);
         Objects.requireNonNull(task);
         assert task.getParentTaskId().equals(request.getParentTask()) : "Request [ " + request + "] didn't preserve it parentTaskId";
@@ -137,6 +141,7 @@ public class TaskManager implements ClusterStateApplier {
         if (task instanceof CancellableTask) {
             registerCancellableTask(task);
         } else {
+            // 放入task到previousTask存储
             Task previousTask = tasks.put(task.getId(), task);
             assert previousTask == null;
         }

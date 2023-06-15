@@ -64,6 +64,7 @@ public class ClusterService extends AbstractLifecycleComponent {
         this.settings = settings;
         this.nodeName = Node.NODE_NAME_SETTING.get(settings);
         this.masterService = masterService;
+        // 操作分片路由
         this.operationRouting = new OperationRouting(settings, clusterSettings);
         this.clusterSettings = clusterSettings;
         this.clusterName = ClusterName.CLUSTER_NAME_SETTING.get(settings);

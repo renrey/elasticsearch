@@ -167,11 +167,15 @@ public interface DocWriteRequest<T> extends IndicesRequest, Accountable {
         /**
          * Index the source. If there an existing document with the id, it will
          * be replaced.
+         * 把数据索引起来，如果已存在相同id的doc，会已存在的代替
+         * 应该是把数据重新索引
          */
         INDEX(0),
         /**
          * Creates the resource. Simply adds it to the index, if there is an existing
          * document with the id, then it won't be removed.
+         * 创建数据？只是加入到es index中，如果存在相同id，则不会成功
+         * 应该就只没相同id情况下，新增数据
          */
         CREATE(1),
         /** Updates a document */

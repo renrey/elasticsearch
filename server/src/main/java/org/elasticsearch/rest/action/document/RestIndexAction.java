@@ -71,6 +71,7 @@ public class RestIndexAction extends BaseRestHandler {
 
         @Override
         public RestChannelConsumer prepareRequest(RestRequest request, final NodeClient client) throws IOException {
+            // 就是往Request加入op_type=create
             validateOpType(request.params().get("op_type"));
             request.params().put("op_type", "create");
             return super.prepareRequest(request, client);
@@ -116,6 +117,10 @@ public class RestIndexAction extends BaseRestHandler {
 
     @Override
     public RestChannelConsumer prepareRequest(final RestRequest request, final NodeClient client) throws IOException {
+        /**
+         * 包装成新的IndexRequest
+         * 这里Index是说把数据进行索引
+         */
         IndexRequest indexRequest;
         final String type = request.param("type");
         if (type != null && type.equals(MapperService.SINGLE_MAPPING_NAME) == false) {
@@ -144,6 +149,10 @@ public class RestIndexAction extends BaseRestHandler {
             indexRequest.opType(sOpType);
         }
 
+        // 返回具体执行函数，会把上面的indexRequest交给Node的index方法执行
+        // 执行：通过node执行这个indexRequest
+        // RestStatusToXContentListener是执行完成后回调操作，可以看到定义函数是会从request拿到具体routing，
+        // 最后生成响应的时候，写到header的Location中，也就代表这次具体执行节点位置
         return channel ->
                 client.index(indexRequest, new RestStatusToXContentListener<>(channel, r -> r.getLocation(indexRequest.routing())));
     }

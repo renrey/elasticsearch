@@ -316,6 +316,9 @@ public abstract class TransportReplicationAction<
         @Override
         protected void doRun() throws Exception {
             final ShardId shardId = primaryRequest.getRequest().shardId();
+            /**
+             * 获取对应shard实例
+             */
             final IndexShard indexShard = getIndexShard(shardId);
             final ShardRouting shardRouting = indexShard.routingEntry();
             // we may end up here if the cluster state used to route the primary is so stale that the underlying
@@ -697,6 +700,7 @@ public abstract class TransportReplicationAction<
                     finishAsFailed(blockException);
                 }
             } else {
+                // 获取目标请求的index名（不是routing）
                 final IndexMetadata indexMetadata = state.metadata().index(request.shardId().getIndex());
                 if (indexMetadata == null) {
                     // ensure that the cluster state on the node is at least as high as the node that decided that the index was there
@@ -714,36 +718,52 @@ public abstract class TransportReplicationAction<
                     }
                 }
 
+                // 索引已关
                 if (indexMetadata.getState() == IndexMetadata.State.CLOSE) {
                     finishAsFailed(new IndexClosedException(indexMetadata.getIndex()));
                     return;
                 }
 
+                // 设置需要当前shard 下需要的最少active shard实例数
+                // 如果请求没设置，则使用索引默认配置
                 if (request.waitForActiveShards() == ActiveShardCount.DEFAULT) {
                     // if the wait for active shard count has not been set in the request,
                     // resolve it from the index settings
+                    // 索引配置index.write.wait_for_active_shards，默认为1
                     request.waitForActiveShards(indexMetadata.getWaitForActiveShards());
                 }
                 assert request.waitForActiveShards() != ActiveShardCount.DEFAULT :
                     "request waitForActiveShards must be set in resolveRequest";
 
+                /**
+                 * 获取目标逻辑shard的当前primary shard实例信息
+                 */
                 final ShardRouting primary = state.getRoutingTable().shardRoutingTable(request.shardId()).primaryShard();
+                // 没有primaryshard 或者 不在active状态
                 if (primary == null || primary.active() == false) {
                     logger.trace("primary shard [{}] is not yet active, scheduling a retry: action [{}], request [{}], "
                         + "cluster state version [{}]", request.shardId(), actionName, request, state.version());
                     retryBecauseUnavailable(request.shardId(), "primary shard is not active");
                     return;
                 }
+                // 没找到有这个primaryshard的节点
                 if (state.nodes().nodeExists(primary.currentNodeId()) == false) {
                     logger.trace("primary shard [{}] is assigned to an unknown node [{}], scheduling a retry: action [{}], request [{}], "
                         + "cluster state version [{}]", request.shardId(), primary.currentNodeId(), actionName, request, state.version());
                     retryBecauseUnavailable(request.shardId(), "primary shard isn't assigned to a known node.");
                     return;
                 }
+                // 获取这个primaryshard的所在node
                 final DiscoveryNode node = state.nodes().get(primary.currentNodeId());
+                /**
+                 * 执行
+                 * 如果p s在当前进程节点，则在本地执行，不会请求
+                 */
                 if (primary.currentNodeId().equals(state.nodes().getLocalNodeId())) {
+                    // 本地执行
                     performLocalAction(state, primary, node, indexMetadata);
                 } else {
+                    // 请求执行
                     performRemoteAction(state, primary, node);
                 }
             }
@@ -755,6 +775,14 @@ public abstract class TransportReplicationAction<
                 logger.trace("send action [{}] to local primary [{}] for request [{}] with cluster state version [{}] to [{}] ",
                     transportPrimaryAction, request.shardId(), request, state.version(), primary.currentNodeId());
             }
+            /**
+             * 实际使用封装的本地connection来模拟发送、接受请求
+             * @see org.elasticsearch.transport.TransportService#localNodeConnection ->
+             *
+             * 具体还是primaryaction的handler
+             * @see org.elasticsearch.action.support.replication.TransportReplicationAction#handlePrimaryRequest(org.elasticsearch.action.support.replication.TransportReplicationAction.ConcreteShardRequest, org.elasticsearch.transport.TransportChannel, org.elasticsearch.tasks.Task)
+             * @see AsyncPrimaryAction#doRun()
+             */
             performAction(node, transportPrimaryAction, true,
                 new ConcreteShardRequest<>(request, primary.allocationId().getId(), indexMetadata.primaryTerm(primary.id()), true,
                     initiatedByNodeClient));

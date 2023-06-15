@@ -441,7 +441,11 @@ public class ActionModule extends AbstractModule {
         this.settingsFilter = settingsFilter;
         this.actionPlugins = actionPlugins;
         this.threadPool = threadPool;
+        /**
+         * 给各种基础Action（ActionType）注册通信用的TransportAction
+         */
         actions = setupActions(actionPlugins);
+        // 注册通信请求时，在前面先执行的filter，目前只有security、xpack、ml的fliter
         actionFilters = setupActionFilters(actionPlugins);
         autoCreateIndex = transportClient
             ? null
@@ -655,9 +659,13 @@ public class ActionModule extends AbstractModule {
             if (handler instanceof AbstractCatAction) {
                 catActions.add((AbstractCatAction) handler);
             }
-            // 把Action(Handler)的所有route注册到restController
+            // 把Action(Handler)的所有route（url）注册到restController
+            // 并且绑定action自己，接受对应请求就会直接对应Action(Handler)对象
             restController.registerHandler(handler);
         };
+        /**
+         * 把各种action注册到restController（用registerHandler的逻辑）
+         */
         registerHandler.accept(new RestAddVotingConfigExclusionAction());
         registerHandler.accept(new RestClearVotingConfigExclusionsAction());
         registerHandler.accept(new RestMainAction());

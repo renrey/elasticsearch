@@ -28,6 +28,8 @@ import org.elasticsearch.action.index.IndexRequest;
 import org.elasticsearch.action.ingest.IngestActionForwarder;
 import org.elasticsearch.action.support.ActionFilters;
 import org.elasticsearch.action.support.HandledTransportAction;
+import org.elasticsearch.action.support.replication.ReplicationRequest;
+import org.elasticsearch.action.support.replication.TransportReplicationAction;
 import org.elasticsearch.action.update.TransportUpdateAction;
 import org.elasticsearch.action.update.UpdateRequest;
 import org.elasticsearch.action.update.UpdateResponse;
@@ -142,10 +144,13 @@ public class TransportBulkAction extends HandledTransportAction<BulkRequest, Bul
      */
     public static IndexRequest getIndexWriteRequest(DocWriteRequest<?> docWriteRequest) {
         IndexRequest indexRequest = null;
+        // 新增的，直接index
         if (docWriteRequest instanceof IndexRequest) {
             indexRequest = (IndexRequest) docWriteRequest;
+        // 修改的，
         } else if (docWriteRequest instanceof UpdateRequest) {
             UpdateRequest updateRequest = (UpdateRequest) docWriteRequest;
+            // 是否更新原数据
             indexRequest = updateRequest.docAsUpsert() ? updateRequest.doc() : updateRequest.upsertRequest();
         }
         return indexRequest;
@@ -172,7 +177,10 @@ public class TransportBulkAction extends HandledTransportAction<BulkRequest, Bul
         boolean hasIndexRequestsWithPipelines = false;
         final Metadata metadata = clusterService.state().getMetadata();
         final Version minNodeVersion = clusterService.state().getNodes().getMinNodeVersion();
+        // bulkRequest里每个单独request
         for (DocWriteRequest<?> actionRequest : bulkRequest.requests) {
+            // 待确认？
+            // 根据request类型，直接新增数据进行index or 更新update数据，生成最后的IndexRequest（底层都是把数据进行index索引）
             IndexRequest indexRequest = getIndexWriteRequest(actionRequest);
             if (indexRequest != null) {
                 // Each index request needs to be evaluated, because this method also modifies the IndexRequest
@@ -215,6 +223,8 @@ public class TransportBulkAction extends HandledTransportAction<BulkRequest, Bul
 
         // Attempt to create all the indices that we're going to need during the bulk before we start.
         // Step 1: collect all the indices in the request
+        // 过滤掉删除操作
+        // 1. 获取这个bulk请求中（非删除）所有request操作的index
         final Map<String, Boolean> indices = bulkRequest.requests.stream()
             // delete requests should not attempt to create the index (if the index does not
             // exists), unless an external versioning is used
@@ -224,6 +234,7 @@ public class TransportBulkAction extends HandledTransportAction<BulkRequest, Bul
             .collect(Collectors.toMap(DocWriteRequest::index, DocWriteRequest::isRequireAlias, (v1, v2) -> v1 || v2));
 
         // Step 2: filter the list of indices to find those that don't currently exist.
+        // 从找到的indices中，看看哪些还没index还没创建
         final Map<String, IndexNotFoundException> indicesThatCannotBeCreated = new HashMap<>();
         Set<String> autoCreateIndices = new HashSet<>();
         ClusterState state = clusterService.state();
@@ -237,10 +248,14 @@ public class TransportBulkAction extends HandledTransportAction<BulkRequest, Bul
         }
 
         // Step 3: create all the indices that are missing, if there are any missing. start the bulk after all the creates come back.
+        // 3。有不存在的index需要先创建
+        // 无需要创建的
         if (autoCreateIndices.isEmpty()) {
+            // 直接执行完整bulk写 doc请求
             executeBulk(task, bulkRequest, startTime, listener, responses, indicesThatCannotBeCreated);
         } else {
             final AtomicInteger counter = new AtomicInteger(autoCreateIndices.size());
+            // 这里进行创建index操作
             for (String index : autoCreateIndices) {
                 createIndex(index, bulkRequest.timeout(), minNodeVersion, new ActionListener<CreateIndexResponse>() {
                     @Override
@@ -418,9 +433,14 @@ public class TransportBulkAction extends HandledTransportAction<BulkRequest, Bul
                 return;
             }
             final ConcreteIndices concreteIndices = new ConcreteIndices(clusterState, indexNameExpressionResolver);
+            // 集群元数据
             Metadata metadata = clusterState.metadata();
             // Group the requests by ShardId -> Operations mapping
+            /**
+             * 按目标shard分组请求
+             */
             Map<ShardId, List<BulkItemRequest>> requestsByShard = new HashMap<>();
+            // 开启执行每个单独request
             for (int i = 0; i < bulkRequest.requests.size(); i++) {
                 DocWriteRequest<?> docWriteRequest = bulkRequest.requests.get(i);
                 //the request can only be null because we set it to null in the previous step, so it gets ignored
@@ -433,6 +453,8 @@ public class TransportBulkAction extends HandledTransportAction<BulkRequest, Bul
                 if (addFailureIfIndexIsUnavailable(docWriteRequest, i, concreteIndices, metadata)) {
                     continue;
                 }
+                // 获取es index具体信息
+                // concrete 具体
                 Index concreteIndex = concreteIndices.resolveIfAbsent(docWriteRequest);
                 try {
                     // The ConcreteIndices#resolveIfAbsent(...) method validates via IndexNameExpressionResolver whether
@@ -447,15 +469,27 @@ public class TransportBulkAction extends HandledTransportAction<BulkRequest, Bul
                         throw new IllegalArgumentException("only write ops with an op_type of create are allowed in data streams");
                     }
 
+                    /**
+                     * 判断写doc操作的类型
+                     * 这里主要生成请求的一些元数据，例如目标alias、datastream时，routing到具体index
+                     */
                     switch (docWriteRequest.opType()) {
                         case CREATE:
                         case INDEX:
-                            prohibitAppendWritesInBackingIndices(docWriteRequest, metadata);
-                            prohibitCustomRoutingOnDataStream(docWriteRequest, metadata);
+                            prohibitAppendWritesInBackingIndices(docWriteRequest, metadata); // 父DATA_STREAM相关操作
+                            prohibitCustomRoutingOnDataStream(docWriteRequest, metadata); // DATA_STREAM相关操作
+                            // 下面是具体的执行
                             IndexRequest indexRequest = (IndexRequest) docWriteRequest;
+                            // 获取es 索引的元数据
                             final IndexMetadata indexMetadata = metadata.index(concreteIndex);
+                            // 索引的mapping
                             MappingMetadata mappingMd = indexMetadata.mappingOrDefault();
+                            // 当前索引创建时所使用的es版本
                             Version indexCreated = indexMetadata.getCreationVersion();
+                            /**
+                             * 针对组合index进行具体分片路由，保存到routing，主要是针对alias、datastrem2中组合index类型
+                             * 如果参数是准确的index，routing就是当前index
+                             */
                             indexRequest.resolveRouting(metadata);
                             indexRequest.process(indexCreated, mappingMd, concreteIndex.getName());
                             break;
@@ -472,8 +506,17 @@ public class TransportBulkAction extends HandledTransportAction<BulkRequest, Bul
                             break;
                         default: throw new AssertionError("request type not supported: [" + docWriteRequest.opType() + "]");
                     }
+                    /**
+                     * ！！！
+                     * ==============
+                     * 对当前请求进行目标shard分片路由，
+                     * 路由参数：index名字（alias、datastream）、请求id、请求具体index
+                     * 这里是先逻辑shard分片路由，再继续对应逻辑shard下的shard实例路由，但这里其实那逻辑shard的id
+                     */
+                    // shardId还是逻辑shard 的id
                     ShardId shardId = clusterService.operationRouting().indexShards(clusterState, concreteIndex.getName(),
                             docWriteRequest.id(), docWriteRequest.routing()).shardId();
+                    // 放入对应shard分组请求中
                     List<BulkItemRequest> shardRequests = requestsByShard.computeIfAbsent(shardId, shard -> new ArrayList<>());
                     shardRequests.add(new BulkItemRequest(i, docWriteRequest));
                 } catch (ElasticsearchParseException | IllegalArgumentException | RoutingMissingException e) {
@@ -494,9 +537,11 @@ public class TransportBulkAction extends HandledTransportAction<BulkRequest, Bul
 
             final AtomicInteger counter = new AtomicInteger(requestsByShard.size());
             String nodeId = clusterService.localNode().getId();
+            // 开始进行对不同目标shard进行发送请求
             for (Map.Entry<ShardId, List<BulkItemRequest>> entry : requestsByShard.entrySet()) {
                 final ShardId shardId = entry.getKey();
                 final List<BulkItemRequest> requests = entry.getValue();
+                // 生成对这个shard的bulk请求：把多个请求都放到这个bulk请求里
                 BulkShardRequest bulkShardRequest = new BulkShardRequest(shardId, bulkRequest.getRefreshPolicy(),
                         requests.toArray(new BulkItemRequest[requests.size()]));
                 bulkShardRequest.waitForActiveShards(bulkRequest.waitForActiveShards());
@@ -505,6 +550,15 @@ public class TransportBulkAction extends HandledTransportAction<BulkRequest, Bul
                 if (task != null) {
                     bulkShardRequest.setParentTask(nodeId, task.getId());
                 }
+                /**
+                 * 执行对（逻辑）shard的bulk请求
+                 * @see TransportReplicationAction#doExecute(Task, ReplicationRequest, ActionListener)
+                 * ->
+                 * @see org.elasticsearch.action.support.replication.TransportReplicationAction.ReroutePhase#doRun()
+                 * ->
+                  @see org.elasticsearch.action.support.replication.TransportReplicationAction#handlePrimaryRequest(org.elasticsearch.action.support.replication.TransportReplicationAction.ConcreteShardRequest, org.elasticsearch.transport.TransportChannel, org.elasticsearch.tasks.Task)
+                   @see TransportReplicationAction.AsyncPrimaryAction#doRun()
+                 */
                 shardBulkAction.execute(bulkShardRequest, new ActionListener<BulkShardResponse>() {
                     @Override
                     public void onResponse(BulkShardResponse bulkShardResponse) {
@@ -633,6 +687,9 @@ public class TransportBulkAction extends HandledTransportAction<BulkRequest, Bul
 
     void executeBulk(Task task, final BulkRequest bulkRequest, final long startTimeNanos, final ActionListener<BulkResponse> listener,
             final AtomicArray<BulkItemResponse> responses, Map<String, IndexNotFoundException> indicesThatCannotBeCreated) {
+        /**
+         * 把执行任务包装1个BulkOperation进行执行
+         */
         new BulkOperation(task, bulkRequest, listener, responses, startTimeNanos, indicesThatCannotBeCreated).run();
     }
 

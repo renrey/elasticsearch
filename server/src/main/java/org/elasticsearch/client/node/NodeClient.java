@@ -12,7 +12,10 @@ import org.elasticsearch.action.ActionType;
 import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.action.ActionRequest;
 import org.elasticsearch.action.ActionResponse;
+import org.elasticsearch.action.bulk.TransportSingleItemBulkWriteAction;
+import org.elasticsearch.action.index.TransportIndexAction;
 import org.elasticsearch.action.support.TransportAction;
+import org.elasticsearch.action.support.replication.ReplicatedWriteRequest;
 import org.elasticsearch.client.Client;
 import org.elasticsearch.client.support.AbstractClient;
 import org.elasticsearch.cluster.node.DiscoveryNode;
@@ -32,6 +35,10 @@ import java.util.function.Supplier;
  */
 public class NodeClient extends AbstractClient {
 
+    /**
+     * 注册的方法
+     * @see org.elasticsearch.action.ActionModule#setupActions(java.util.List)
+     */
     private Map<ActionType, TransportAction> actions;
     /**
      * The id of the local {@link DiscoveryNode}. Useful for generating task ids from tasks returned by
@@ -83,6 +90,15 @@ public class NodeClient extends AbstractClient {
     public <    Request extends ActionRequest,
                 Response extends ActionResponse
             > Task executeLocally(ActionType<Response> action, Request request, ActionListener<Response> listener) {
+        // 获取针对当前action(ActionType)的通信操作(transportAction),并传入request执行发送请求
+        /**
+         * 例如IndexAction使用TransportIndexAction
+         * @see TransportIndexAction
+         *
+         * execute
+         * 1。 先执行transportAction父类的execute
+         * 2、执行transportAction子类的doExecute
+         */
         return transportAction(action).execute(request, listener);
     }
 
@@ -116,6 +132,7 @@ public class NodeClient extends AbstractClient {
         if (actions == null) {
             throw new IllegalStateException("NodeClient has not been initialized");
         }
+        // ActionType类都有对应绑定的TransportAction
         TransportAction<Request, Response> transportAction = actions.get(action);
         if (transportAction == null) {
             throw new IllegalStateException("failed to find action [" + action + "] to execute");

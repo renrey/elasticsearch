@@ -896,6 +896,9 @@ public class TransportService extends AbstractLifecycleComponent
         try {
             onRequestSent(localNode, requestId, action, request, options);
             onRequestReceived(requestId, action);
+            /**
+             * 拿到这个内部请求的在本地绑定的handler
+             */
             final RequestHandlerRegistry reg = getRequestHandler(action);
             if (reg == null) {
                 throw new ActionNotFoundTransportException("Action [" + action + "] not found");
@@ -903,6 +906,8 @@ public class TransportService extends AbstractLifecycleComponent
             final String executor = reg.getExecutor();
             if (ThreadPool.Names.SAME.equals(executor)) {
                 //noinspection unchecked
+                // 默认
+                //执行接受后操作
                 reg.processMessageReceived(request, channel);
             } else {
                 threadPool.executor(executor).execute(new AbstractRunnable() {

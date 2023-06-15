@@ -267,12 +267,22 @@ public class OperationRouting {
     }
 
     protected IndexShardRoutingTable shards(ClusterState clusterState, String index, String id, String routing) {
+        // 1。路由具体index的（逻辑primary）shard id
         int shardId = generateShardId(indexMetadata(clusterState, index), id, routing);
+        // 2。拿到对应大逻辑shard 的所有具体shard实例配置
         return clusterState.getRoutingTable().shardRoutingTable(index, shardId);
     }
 
     public ShardId shardId(ClusterState clusterState, String index, String id, @Nullable String routing) {
         IndexMetadata indexMetadata = indexMetadata(clusterState, index);
+        // 生成shard id
+        /**
+         * 默认未调整各种因子下：
+         * shard id = routing的murmurhash % 索引分片数
+         *
+         * 如果都调整
+         *  (routing的murmurhash + 请求id的hash % (index.routing_partition_size))%  (索引分片数+ RoutingFactor)
+         */
         return new ShardId(indexMetadata.getIndex(), generateShardId(indexMetadata, id, routing));
     }
 
@@ -287,7 +297,11 @@ public class OperationRouting {
             effectiveRouting = routing;
         }
 
+        // 是否调整index.routing_partition_size为非1
         if (indexMetadata.isRoutingPartitionedIndex()) {
+            // 非1
+            // 1。先对请求id进行murmurhash
+            // 2。用hash值对index.routing_partition_size进行取模
             partitionOffset = Math.floorMod(Murmur3HashFunction.hash(id), indexMetadata.getRoutingPartitionSize());
         } else {
             // we would have still got 0 above but this check just saves us an unnecessary hash calculation
@@ -298,10 +312,14 @@ public class OperationRouting {
     }
 
     private static int calculateScaledShardId(IndexMetadata indexMetadata, String effectiveRouting, int partitionOffset) {
+        // 1。对routing（准确index）名进行murmurhash
         final int hash = Murmur3HashFunction.hash(effectiveRouting) + partitionOffset;
 
         // we don't use IMD#getNumberOfShards since the index might have been shrunk such that we need to use the size
         // of original index to hash documents
+        // 2。索引的shard数(默认index.number_of_shards) / RoutingFactor（默认1）
+        //3。最后路由得到的shard id= routing的hash % (索引的shard数/ RoutingFactor)
+        //  -》 默认就是 routing的hash/索引shard数量
         return Math.floorMod(hash, indexMetadata.getRoutingNumShards()) / indexMetadata.getRoutingFactor();
     }
 

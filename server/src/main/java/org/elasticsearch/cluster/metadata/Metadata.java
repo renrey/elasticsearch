@@ -599,10 +599,16 @@ public class Metadata implements Iterable<IndexMetadata>, Diffable<Metadata>, To
             return routing;
         }
 
+        /**
+         * 这里就是主要对index进行routing, 好像其实就是对alias、datastream等组合index去routing，如果是准确index，没特别
+         * IndicesLookup构造
+         * @see org.elasticsearch.cluster.metadata.Metadata.Builder#buildIndicesLookup()
+         */
         IndexAbstraction result = getIndicesLookup().get(aliasOrIndex);
         if (result == null || result.getType() != IndexAbstraction.Type.ALIAS) {
             return routing;
         }
+        // 下面的应该是对alias去做routing index
         IndexMetadata writeIndex = result.getWriteIndex();
         if (writeIndex == null) {
             throw new IllegalArgumentException("alias [" + aliasOrIndex + "] does not have a write index");

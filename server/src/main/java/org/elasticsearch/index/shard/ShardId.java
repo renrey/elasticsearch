@@ -23,7 +23,9 @@ import java.io.IOException;
  */
 public class ShardId implements Comparable<ShardId>, ToXContentFragment, Writeable {
 
+    // 索引（index、alias、datastream）信息
     private final Index index;
+    // 分片id
     private final int shardId;
     private final int hashCode;
 

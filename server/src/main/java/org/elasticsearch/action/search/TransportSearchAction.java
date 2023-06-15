@@ -121,6 +121,7 @@ public class TransportSearchAction extends HandledTransportAction<SearchRequest,
         this.searchPhaseController = searchPhaseController;
         this.searchTransportService = searchTransportService;
         this.remoteClusterService = searchTransportService.getRemoteClusterService();
+        // （内部)接口  绑定、注册请求具体处理handler
         SearchTransportService.registerRequestHandler(transportService, searchService);
         this.clusterService = clusterService;
         this.searchService = searchService;

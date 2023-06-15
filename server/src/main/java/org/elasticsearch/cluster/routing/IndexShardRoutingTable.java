@@ -50,6 +50,7 @@ public class IndexShardRoutingTable implements Iterable<ShardRouting> {
 
     final ShardRouting primary;
     final List<ShardRouting> replicas;
+    // 所有shard实例
     final List<ShardRouting> shards;
     final List<ShardRouting> activeShards;
     final List<ShardRouting> assignedShards;

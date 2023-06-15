@@ -69,11 +69,16 @@ public abstract class TransportAction<Request extends ActionRequest, Response ex
         final Releasable unregisterChildNode = registerChildNode(request.getParentTask());
         final Task task;
         try {
+            // 注册一个task，拥有自增id
             task = taskManager.register("transport", actionName, request);
         } catch (TaskCancelledException e) {
             unregisterChildNode.close();
             throw e;
         }
+        /**
+         * 执行生成的task
+         * 即发送请求
+         */
         execute(task, request, new ActionListener<Response>() {
             @Override
             public void onResponse(Response response) {
@@ -144,8 +149,15 @@ public abstract class TransportAction<Request extends ActionRequest, Response ex
         if (task != null && request.getShouldStoreResult()) {
             listener = new TaskResultStoringActionListener<>(taskManager, task, listener);
         }
-
+        /**
+         * 本次task 生成一个请求执行链（就是本地执行都有多个操作需要顺序执行）
+         */
         RequestFilterChain<Request, Response> requestFilterChain = new RequestFilterChain<>(this, logger);
+        /**
+         * 执行执行链
+         * -> 说明执行逻辑顺序都在proceed方法里
+         * 除了action filter外，具体只看子类的doExecute即可
+         */
         requestFilterChain.proceed(task, actionName, request, listener);
     }
 
@@ -165,12 +177,19 @@ public abstract class TransportAction<Request extends ActionRequest, Response ex
 
         @Override
         public void proceed(Task task, String actionName, Request request, ActionListener<Response> listener) {
+            // 只是用来代表当前链执行到哪里
             int i = index.getAndIncrement();
             try {
+                /**
+                 * 目前可用的filter就是xpack、security、ml，主要用来做验证的
+                 */
+                // filter没执行完
                 if (i < this.action.filters.length) {
                     this.action.filters[i].apply(task, actionName, request, listener, this);
+                // filter执行完，执行具体action！！！
                 } else if (i == this.action.filters.length) {
                     this.action.doExecute(task, request, listener);
+                // action执行完，居然还进来这里
                 } else {
                     listener.onFailure(new IllegalStateException("proceed was called too many times"));
                 }

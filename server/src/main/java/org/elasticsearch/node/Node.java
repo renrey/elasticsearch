@@ -494,6 +494,10 @@ public class Node implements Closeable {
                 ));
             final SystemIndices systemIndices = new SystemIndices(featuresMap);
 
+            /**
+             * ModulesBuilder：负责把各module构造的构造器
+             * 下面把需要加载的各个module注册到builder中
+             */
             ModulesBuilder modules = new ModulesBuilder();
             // plugin modules must be added here, before others or we can get crazy injection errors...
             for (Module pluginModule : pluginsService.createGuiceModules()) {
@@ -617,6 +621,7 @@ public class Node implements Closeable {
                                                  repositoriesServiceReference::get).stream())
                 .collect(Collectors.toList());
 
+            // 主要对外接口api Action的
             ActionModule actionModule = new ActionModule(false, settings, clusterModule.getIndexNameExpressionResolver(),
                 settingsModule.getIndexScopedSettings(), settingsModule.getClusterSettings(), settingsModule.getSettingsFilter(),
                 threadPool, pluginsService.filterPlugins(ActionPlugin.class), client, circuitBreakerService, usageService, systemIndices);
@@ -646,7 +651,11 @@ public class Node implements Closeable {
                 pluginsService.filterPlugins(ActionPlugin.class).stream().flatMap(p -> p.getTaskHeaders().stream()),
                 Stream.of(Task.X_OPAQUE_ID)
             ).collect(Collectors.toSet());
+
             // 集群通信
+            /**
+             * Transport通信Service, 执行调用action操作的实际触发、接收组件入口（rest只是外部发起操作的入口）
+             */
             final TransportService transportService = newTransportService(settings, transport, threadPool,
                 networkModule.getTransportInterceptor(), localNodeFactory, settingsModule.getClusterSettings(), taskHeaders);
             final GatewayMetaState gatewayMetaState = new GatewayMetaState();
@@ -706,6 +715,7 @@ public class Node implements Closeable {
             resourcesToClose.add(persistentTasksClusterService);
             final PersistentTasksService persistentTasksService = new PersistentTasksService(clusterService, threadPool, client);
 
+            // es主功能全绑在这个module
             modules.add(b -> {
                     b.bind(Node.class).toInstance(this);
                     b.bind(NodeService.class).toInstance(nodeService);
@@ -793,7 +803,7 @@ public class Node implements Closeable {
                     namedWriteableRegistry);
             logger.debug("initializing HTTP handlers ...");
             /**
-             * 注册path与对应的Action（Handler）映射到Restcontroller中
+             * 注册url path与对应的Action（Handler）映射到Restcontroller中
              */
             actionModule.initRestHandlers(() -> clusterService.state().nodes());
             logger.info("initialized");

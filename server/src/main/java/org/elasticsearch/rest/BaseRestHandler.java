@@ -80,6 +80,7 @@ public abstract class BaseRestHandler implements RestHandler {
     @Override
     public final void handleRequest(RestRequest request, RestChannel channel, NodeClient client) throws Exception {
         // prepare the request for execution; has the side effect of touching the request parameters
+        // 1.通过prepareRequest得到具体的处理1个RestChannelConsumer
         final RestChannelConsumer action = prepareRequest(request, client);
 
         // validate unconsumed params, but we must exclude params used to format the response
@@ -103,6 +104,7 @@ public abstract class BaseRestHandler implements RestHandler {
 
         usageCount.increment();
         // execute the action
+        // 执行RestChannelConsumer
         action.accept(channel);
     }
 

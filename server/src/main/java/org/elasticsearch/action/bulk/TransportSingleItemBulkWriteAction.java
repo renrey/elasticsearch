@@ -38,6 +38,10 @@ public abstract class TransportSingleItemBulkWriteAction<
 
     @Override
     protected void doExecute(Task task, final Request request, final ActionListener<Response> listener) {
+        /**
+         * @see org.elasticsearch.action.bulk.TransportBulkAction#doExecute(org.elasticsearch.tasks.Task, org.elasticsearch.action.bulk.BulkRequest, org.elasticsearch.action.ActionListener)
+         */
+        // 生成1个BulkRequest，里面只包含1个DocWriteRequest
         bulkAction.execute(task, toSingleItemBulkRequest(request), wrapBulkResponse(listener));
     }
 

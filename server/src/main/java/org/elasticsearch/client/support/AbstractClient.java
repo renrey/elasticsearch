@@ -340,6 +340,7 @@ import org.elasticsearch.client.ClusterAdminClient;
 import org.elasticsearch.client.ElasticsearchClient;
 import org.elasticsearch.client.FilterClient;
 import org.elasticsearch.client.IndicesAdminClient;
+import org.elasticsearch.client.node.NodeClient;
 import org.elasticsearch.cluster.metadata.IndexMetadata.APIBlock;
 import org.elasticsearch.common.Nullable;
 import org.elasticsearch.common.bytes.BytesReference;
@@ -398,7 +399,13 @@ public abstract class AbstractClient implements Client {
     public final <Request extends ActionRequest, Response extends ActionResponse> void execute(
         ActionType<Response> action, Request request, ActionListener<Response> listener) {
         try {
+            //保存回调函数
             listener = threadedWrapper.wrap(listener);
+            // 真正执行请求
+            /**
+             * 例如服务端Node
+             * @see NodeClient#doExecute(ActionType, ActionRequest, ActionListener)
+             */
             doExecute(action, request, listener);
         } catch (Exception e) {
             assert false : new AssertionError(e);
@@ -416,6 +423,11 @@ public abstract class AbstractClient implements Client {
 
     @Override
     public void index(final IndexRequest request, final ActionListener<IndexResponse> listener) {
+        // 代表是执行index相关的操作，所以是IndexAction
+        /**
+         * 原来的request 就只是请求参数了
+         * 重要是IndexAction对象执行（
+         */
         execute(IndexAction.INSTANCE, request, listener);
     }
 
