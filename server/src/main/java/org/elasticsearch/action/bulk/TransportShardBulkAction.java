@@ -113,6 +113,7 @@ public class TransportShardBulkAction extends TransportWriteAction<BulkShardRequ
     protected void dispatchedShardOperationOnPrimary(BulkShardRequest request, IndexShard primary,
             ActionListener<PrimaryResult<BulkShardRequest, BulkShardResponse>> listener) {
         ClusterStateObserver observer = new ClusterStateObserver(clusterService, request.timeout(), logger, threadPool.getThreadContext());
+        // performOnPrimary-> 执行
         performOnPrimary(request, primary, updateHelper, threadPool::absoluteTimeInMillis,
             (update, shardId, type, mappingListener) -> {
                 assert update != null;
@@ -162,7 +163,14 @@ public class TransportShardBulkAction extends TransportWriteAction<BulkShardRequ
             @Override
             protected void doRun() throws Exception {
                 while (context.hasMoreOperationsToExecute()) {
+                    /**
+                     * executeBulkItemRequest
+                     *
+                     * context里保存了这个bulk请求里对这个primary shard操作的多个请求操作
+                     * 如果有多个操作，会通过回调函数重复调用doRun方法，直到都执行完了（context中拿不到下一个需要执行的操作）
+                      */
                     if (executeBulkItemRequest(context, updateHelper, nowInMillisSupplier, mappingUpdater, waitForMappingUpdate,
+                        // 完成回调函数, 如果有多个操作（1个请求有多个对这个primary操作）会通过这个回调一直提交执行（栈）（重复执行个方法）
                         ActionListener.wrap(v -> executor.execute(this), this::onRejection)) == false) {
                         // We are waiting for a mapping update on another thread, that will invoke this action again once its done
                         // so we just break out here.
@@ -171,6 +179,7 @@ public class TransportShardBulkAction extends TransportWriteAction<BulkShardRequ
                     assert context.isInitial(); // either completed and moved to next or reset
                 }
                 // We're done, there's no more operations to execute so we resolve the wrapped listener
+                // 执行完成请求，就是返回写入请求结果
                 finishRequest();
             }
 
@@ -203,6 +212,7 @@ public class TransportShardBulkAction extends TransportWriteAction<BulkShardRequ
 
             private void finishRequest() {
                 ActionListener.completeWith(listener,
+                    // 创建写入结果对象
                     () -> new WritePrimaryResult<>(
                         context.getBulkShardRequest(), context.buildShardResponse(), context.getLocationToSync(), null,
                         context.getPrimary(), logger));
@@ -221,6 +231,7 @@ public class TransportShardBulkAction extends TransportWriteAction<BulkShardRequ
         final DocWriteRequest.OpType opType = context.getCurrent().opType();
 
         final UpdateHelper.Result updateResult;
+        // 修改操作
         if (opType == DocWriteRequest.OpType.UPDATE) {
             final UpdateRequest updateRequest = (UpdateRequest) context.getCurrent();
             try {
@@ -255,6 +266,7 @@ public class TransportShardBulkAction extends TransportWriteAction<BulkShardRequ
                 default:
                     throw new IllegalStateException("Illegal update operation " + updateResult.getResponseResult());
             }
+        // 增、删操作？无其他特别处理
         } else {
             context.setRequestToExecute(context.getCurrent());
             updateResult = null;
@@ -266,12 +278,19 @@ public class TransportShardBulkAction extends TransportWriteAction<BulkShardRequ
         final long version = context.getRequestToExecute().version();
         final boolean isDelete = context.getRequestToExecute().opType() == DocWriteRequest.OpType.DELETE;
         final Engine.Result result;
+        // 删除操作
         if (isDelete) {
             final DeleteRequest request = context.getRequestToExecute();
             result = primary.applyDeleteOperationOnPrimary(version, request.type(), request.id(), request.versionType(),
                 request.ifSeqNo(), request.ifPrimaryTerm());
         } else {
+            /**
+             * 新增、修改
+             *
+             * applyIndexOperationOnPrimary
+             */
             final IndexRequest request = context.getRequestToExecute();
+            // !!!!
             result = primary.applyIndexOperationOnPrimary(version, request.versionType(),
                 new SourceToParse(request.index(), request.type(), request.id(), request.source(),
                     request.getContentType(), request.routing(), request.getDynamicTemplates()),

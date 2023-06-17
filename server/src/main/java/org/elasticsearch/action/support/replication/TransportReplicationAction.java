@@ -18,6 +18,8 @@ import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.action.ActionListenerResponseHandler;
 import org.elasticsearch.action.ActionResponse;
 import org.elasticsearch.action.UnavailableShardsException;
+import org.elasticsearch.action.bulk.BulkShardRequest;
+import org.elasticsearch.action.bulk.TransportShardBulkAction;
 import org.elasticsearch.action.support.ActionFilters;
 import org.elasticsearch.action.support.ActiveShardCount;
 import org.elasticsearch.action.support.ChannelActionListener;
@@ -152,6 +154,9 @@ public abstract class TransportReplicationAction<
 
         transportService.registerRequestHandler(actionName, ThreadPool.Names.SAME, requestReader, this::handleOperationRequest);
 
+        /**
+         * 注册 [p] action的handler，即收到对应的内部请求时所使用的handler
+         */
         transportService.registerRequestHandler(transportPrimaryAction, executor, forceExecutionOnPrimary, true,
             in -> new ConcreteShardRequest<>(requestReader, in), this::handlePrimaryRequest);
 
@@ -338,11 +343,15 @@ public abstract class TransportReplicationAction<
                     primaryRequest.getTargetAllocationID(), primaryRequest.getPrimaryTerm(), actualTerm);
             }
 
+            // 需要获取到执行权
             acquirePrimaryOperationPermit(
                     indexShard,
                     primaryRequest.getRequest(),
                     ActionListener.wrap(
-                            releasable -> runWithPrimaryShardReference(new PrimaryShardReference(indexShard, releasable)),
+                        /**
+                         * 获取到执行！！！！！
+                         */
+                        releasable -> runWithPrimaryShardReference(new PrimaryShardReference(indexShard, releasable)),
                             e -> {
                                 if (e instanceof ShardNotInPrimaryModeException) {
                                     onFailure(new ReplicationOperation.RetryOnPrimaryException(shardId, "shard is not in primary mode", e));
@@ -390,11 +399,12 @@ public abstract class TransportReplicationAction<
                             }
                         });
                 } else {
+                    // 标记当前task阶段 -》primary
                     setPhase(replicationTask, "primary");
 
                     final ActionListener<Response> responseListener = ActionListener.wrap(response -> {
                         adaptResponse(response, primaryShardReference.indexShard);
-
+                        // 操作执行完后，是否需要syncGlobalCheckpoint, 一般开启
                         if (syncGlobalCheckpointAfterOperation) {
                             try {
                                 primaryShardReference.indexShard.maybeSyncGlobalCheckpoint("post-operation");
@@ -412,15 +422,31 @@ public abstract class TransportReplicationAction<
                         }
 
                         primaryShardReference.close(); // release shard operation lock before responding to caller
+                        // 标记当前task阶段 -》finished 已完成
                         setPhase(replicationTask, "finished");
                         onCompletionListener.onResponse(response);
                     }, e -> handleException(primaryShardReference, e));
 
+                    /**
+                     * 开始执行具体请求操作
+                     * ReplicationOperation: 代表对一组shard 操作，包含1个primary操作、多个replica操作
+                     *
+                     * primary.perform：
+                     * @see org.elasticsearch.action.support.replication.TransportReplicationAction.PrimaryShardReference#perform(org.elasticsearch.action.support.replication.ReplicationRequest, org.elasticsearch.action.ActionListener)
+                     * -》
+                     * shardOperationOnPrimary:
+                     * @see org.elasticsearch.action.support.replication.TransportWriteAction#shardOperationOnPrimary(org.elasticsearch.action.support.replication.ReplicatedWriteRequest, org.elasticsearch.index.shard.IndexShard, org.elasticsearch.action.ActionListener)
+                     *
+                     * ->
+                     * dispatchedShardOperationOnPrimary
+                     * @see TransportShardBulkAction#dispatchedShardOperationOnPrimary(BulkShardRequest, IndexShard, ActionListener)
+                     */
                     new ReplicationOperation<>(primaryRequest.getRequest(), primaryShardReference,
-                        responseListener.map(result -> result.finalResponseIfSuccessful),
-                        newReplicasProxy(), logger, threadPool, actionName, primaryRequest.getPrimaryTerm(), initialRetryBackoffBound,
+                        responseListener.map(result -> result.finalResponseIfSuccessful), // primary操作执行完成回调，先返回finalResponseIfSuccessful, 再进到上面这层定义的回调
+                        newReplicasProxy(),// replica操作
+                        logger, threadPool, actionName, primaryRequest.getPrimaryTerm(), initialRetryBackoffBound,
                         retryTimeout)
-                        .execute();
+                        .execute();// 触发执行
                 }
             } catch (Exception e) {
                 handleException(primaryShardReference, e);
@@ -779,7 +805,7 @@ public abstract class TransportReplicationAction<
              * 实际使用封装的本地connection来模拟发送、接受请求
              * @see org.elasticsearch.transport.TransportService#localNodeConnection ->
              *
-             * 具体还是primaryaction的handler
+             * 具体还是当前TransportAction类中给primaryaction注册的handler
              * @see org.elasticsearch.action.support.replication.TransportReplicationAction#handlePrimaryRequest(org.elasticsearch.action.support.replication.TransportReplicationAction.ConcreteShardRequest, org.elasticsearch.transport.TransportChannel, org.elasticsearch.tasks.Task)
              * @see AsyncPrimaryAction#doRun()
              */

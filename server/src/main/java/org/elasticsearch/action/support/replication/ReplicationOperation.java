@@ -63,6 +63,7 @@ public class ReplicationOperation<
      * operations and the primary finishes.</li>
      * </ul>
      */
+    // 标记当前正在执行的操作数量，如果完成会-1，这些操作是包含primaryshard操作、replica的操作
     private final AtomicInteger pendingActions = new AtomicInteger();
     private final AtomicInteger successfulShards = new AtomicInteger();
     private final Primary<Request, ReplicaRequest, PrimaryResultT> primary;
@@ -84,9 +85,9 @@ public class ReplicationOperation<
                                 Replicas<ReplicaRequest> replicas,
                                 Logger logger, ThreadPool threadPool, String opType, long primaryTerm, TimeValue initialRetryBackoffBound,
                                 TimeValue retryTimeout) {
-        this.replicasProxy = replicas;
-        this.primary = primary;
-        this.resultListener = listener;
+        this.replicasProxy = replicas; // replica
+        this.primary = primary; // 主的
+        this.resultListener = listener; // 主完成后回调操作
         this.logger = logger;
         this.threadPool = threadPool;
         this.request = request;
@@ -108,6 +109,9 @@ public class ReplicationOperation<
 
         totalShards.incrementAndGet();
         pendingActions.incrementAndGet(); // increase by 1 until we finish all primary coordination
+        /**
+         * 给primary执行
+         */
         primary.perform(request, ActionListener.wrap(this::handlePrimaryResult, this::finishAsFailed));
     }
 

@@ -93,6 +93,7 @@ public class TransportBulkShardOperationsAction
         if (logger.isTraceEnabled()) {
             logger.trace("index [{}] on the following primary shard {}", request.getOperations(), primary.routingEntry());
         }
+        // 先执行右边函数
         ActionListener.completeWith(listener, () -> shardOperationOnPrimary(request.shardId(), request.getHistoryUUID(),
             request.getOperations(), request.getMaxSeqNoOfUpdatesOrDeletes(), primary, logger));
     }

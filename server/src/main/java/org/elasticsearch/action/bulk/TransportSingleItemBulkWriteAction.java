@@ -39,6 +39,8 @@ public abstract class TransportSingleItemBulkWriteAction<
     @Override
     protected void doExecute(Task task, final Request request, final ActionListener<Response> listener) {
         /**
+         * 等于实际使用TransportBulkAction作为TransportAction,
+         * 只是多了个toSingleItemBulkRequest方法去把request转换成BulkRequest
          * @see org.elasticsearch.action.bulk.TransportBulkAction#doExecute(org.elasticsearch.tasks.Task, org.elasticsearch.action.bulk.BulkRequest, org.elasticsearch.action.ActionListener)
          */
         // 生成1个BulkRequest，里面只包含1个DocWriteRequest

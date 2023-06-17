@@ -179,6 +179,7 @@ public class TransportBulkAction extends HandledTransportAction<BulkRequest, Bul
         final Version minNodeVersion = clusterService.state().getNodes().getMinNodeVersion();
         // bulkRequest里每个单独request
         for (DocWriteRequest<?> actionRequest : bulkRequest.requests) {
+            // 好像生成往pipeline加入的IndexRequest
             // 待确认？
             // 根据request类型，直接新增数据进行index or 更新update数据，生成最后的IndexRequest（底层都是把数据进行index索引）
             IndexRequest indexRequest = getIndexWriteRequest(actionRequest);
@@ -251,7 +252,7 @@ public class TransportBulkAction extends HandledTransportAction<BulkRequest, Bul
         // 3。有不存在的index需要先创建
         // 无需要创建的
         if (autoCreateIndices.isEmpty()) {
-            // 直接执行完整bulk写 doc请求
+            // （同步）直接执行完整bulk写 doc请求
             executeBulk(task, bulkRequest, startTime, listener, responses, indicesThatCannotBeCreated);
         } else {
             final AtomicInteger counter = new AtomicInteger(autoCreateIndices.size());
@@ -260,6 +261,7 @@ public class TransportBulkAction extends HandledTransportAction<BulkRequest, Bul
                 createIndex(index, bulkRequest.timeout(), minNodeVersion, new ActionListener<CreateIndexResponse>() {
                     @Override
                     public void onResponse(CreateIndexResponse result) {
+                        // es index创建完成，把提交写入doc的任务交给线程池（异步）
                         if (counter.decrementAndGet() == 0) {
                             threadPool.executor(executorName).execute(new ActionRunnable<BulkResponse>(listener) {
 
@@ -552,6 +554,7 @@ public class TransportBulkAction extends HandledTransportAction<BulkRequest, Bul
                 }
                 /**
                  * 执行对（逻辑）shard的bulk请求
+                 *
                  * @see TransportReplicationAction#doExecute(Task, ReplicationRequest, ActionListener)
                  * ->
                  * @see org.elasticsearch.action.support.replication.TransportReplicationAction.ReroutePhase#doRun()

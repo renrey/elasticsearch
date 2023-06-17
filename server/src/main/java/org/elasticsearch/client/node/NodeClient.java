@@ -12,6 +12,7 @@ import org.elasticsearch.action.ActionType;
 import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.action.ActionRequest;
 import org.elasticsearch.action.ActionResponse;
+import org.elasticsearch.action.bulk.TransportBulkAction;
 import org.elasticsearch.action.bulk.TransportSingleItemBulkWriteAction;
 import org.elasticsearch.action.index.TransportIndexAction;
 import org.elasticsearch.action.support.TransportAction;
@@ -90,14 +91,22 @@ public class NodeClient extends AbstractClient {
     public <    Request extends ActionRequest,
                 Response extends ActionResponse
             > Task executeLocally(ActionType<Response> action, Request request, ActionListener<Response> listener) {
-        // 获取针对当前action(ActionType)的通信操作(transportAction),并传入request执行发送请求
+        // 获取当前action(ActionType)的绑定通信操作(TransportAction),并传入request执行发送请求
         /**
          * 例如IndexAction使用TransportIndexAction
          * @see TransportIndexAction
+         * 但是实际现在底层用TransportBulkAction，旧的过期类是调用这个类
+         * @see TransportBulkAction
          *
          * execute
          * 1。 先执行transportAction父类的execute
          * 2、执行transportAction子类的doExecute
+         *
+         * 上面indexaction
+         * 1、先转成bulk请求
+         * @see TransportSingleItemBulkWriteAction#doExecute(Task, ReplicatedWriteRequest, ActionListener)
+         * 2. 执行bulk请求
+         * @see org.elasticsearch.action.bulk.TransportBulkAction#doExecute(org.elasticsearch.tasks.Task, org.elasticsearch.action.bulk.BulkRequest, org.elasticsearch.action.ActionListener)
          */
         return transportAction(action).execute(request, listener);
     }
