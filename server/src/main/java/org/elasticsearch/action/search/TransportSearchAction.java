@@ -210,6 +210,7 @@ public class TransportSearchAction extends HandledTransportAction<SearchRequest,
 
     @Override
     protected void doExecute(Task task, SearchRequest searchRequest, ActionListener<SearchResponse> listener) {
+        // 执行
         executeRequest(task, searchRequest, this::searchAsyncAction, listener);
     }
 
@@ -267,6 +268,9 @@ public class TransportSearchAction extends HandledTransportAction<SearchRequest,
         final long relativeStartNanos = System.nanoTime();
         final SearchTimeProvider timeProvider =
             new SearchTimeProvider(original.getOrCreateAbsoluteStartMillis(), relativeStartNanos, System::nanoTime);
+        /**
+         * 重写请求后的操作，实际就是执行查询操作fetch
+         */
         ActionListener<SearchRequest> rewriteListener = ActionListener.wrap(rewritten -> {
             final ClusterState clusterState = clusterService.state();
             final SearchContextId searchContext;
@@ -280,7 +284,12 @@ public class TransportSearchAction extends HandledTransportAction<SearchRequest,
                     rewritten.indices(), idx -> indexNameExpressionResolver.hasIndexAbstraction(idx, clusterState));
             }
             OriginalIndices localIndices = remoteClusterIndices.remove(RemoteClusterAware.LOCAL_CLUSTER_GROUP_KEY);
+
+            /**
+             * 没有远程的index，在本地
+             */
             if (remoteClusterIndices.isEmpty()) {
+                // 本地检索
                 executeLocalSearch(
                     task, timeProvider, rewritten, localIndices, clusterState, listener, searchContext, searchAsyncActionProvider);
             } else {
@@ -322,6 +331,11 @@ public class TransportSearchAction extends HandledTransportAction<SearchRequest,
                 }
             }
         }, listener::onFailure);
+        /**
+         * !!!
+         * original:request对象
+         *生成上下文：searchService.getRewriteContext(timeProvider::getAbsoluteStartMillis)，当前集群信息等配置
+         */
         Rewriteable.rewriteAndFetch(original, searchService.getRewriteContext(timeProvider::getAbsoluteStartMillis),
             rewriteListener);
     }
@@ -663,10 +677,23 @@ public class TransportSearchAction extends HandledTransportAction<SearchRequest,
         final Executor asyncSearchExecutor = asyncSearchExecutor(concreteLocalIndices, clusterState);
         final boolean preFilterSearchShards = shouldPreFilterSearchShards(clusterState, searchRequest, concreteLocalIndices,
             localShardIterators.size() + remoteShardIterators.size());
+        /**
+         * 提交请求异步执行
+         *
+         * searchAsyncActionProvider：
+         * @see TransportSearchAction#searchAsyncAction(SearchTask, SearchRequest, Executor, GroupShardsIterator, SearchTimeProvider, BiFunction, ClusterState, Map, Map, ActionListener, boolean, ThreadPool, SearchResponse.Clusters)
+         *
+         *QUERY_THEN_FETCH的action对象
+         * @see SearchQueryThenFetchAsyncAction
+         * DFS_QUERY_THEN_FETCH
+         * @see org.elasticsearch.action.search.SearchDfsQueryThenFetchAsyncAction
+         */
         searchAsyncActionProvider.asyncSearchAction(
             task, searchRequest, asyncSearchExecutor, shardIterators, timeProvider, connectionLookup, clusterState,
             Collections.unmodifiableMap(aliasFilter), concreteIndexBoosts, listener,
             preFilterSearchShards, threadPool, clusters).start();
+
+        //end
     }
 
     Executor asyncSearchExecutor(final String[] indices, final ClusterState clusterState) {
@@ -756,6 +783,7 @@ public class TransportSearchAction extends HandledTransportAction<SearchRequest,
         boolean preFilter,
         ThreadPool threadPool,
         SearchResponse.Clusters clusters) {
+        // prefilter 执行加多个prefilter阶段
         if (preFilter) {
             return new CanMatchPreFilterSearchPhase(logger, searchTransportService, connectionLookup,
                 aliasFilter, concreteIndexBoosts, executor, searchRequest, listener, shardIterators,
@@ -782,9 +810,15 @@ public class TransportSearchAction extends HandledTransportAction<SearchRequest,
                 };
             }, clusters, searchService.getCoordinatorRewriteContextProvider(timeProvider::getAbsoluteStartMillis));
         } else {
+            // 一般正常使用
+
+            /**
+             * query phrase的获取到的结果处理函数
+             */
             final QueryPhaseResultConsumer queryResultConsumer = searchPhaseController.newSearchPhaseResults(executor,
                 circuitBreaker, task.getProgressListener(), searchRequest, shardIterators.size(),
                 exc -> searchTransportService.cancelSearchTask(task, "failed to merge result [" + exc.getMessage() + "]"));
+
             AbstractSearchAsyncAction<? extends SearchPhaseResult> searchAsyncAction;
             switch (searchRequest.searchType()) {
                 case DFS_QUERY_THEN_FETCH:
@@ -793,6 +827,9 @@ public class TransportSearchAction extends HandledTransportAction<SearchRequest,
                         executor, queryResultConsumer, searchRequest, listener, shardIterators, timeProvider, clusterState, task, clusters);
                     break;
                 case QUERY_THEN_FETCH:
+                    /**
+                     * QUERY_THEN_FETCH的较常使用
+                     */
                     searchAsyncAction = new SearchQueryThenFetchAsyncAction(logger, searchTransportService, connectionLookup,
                         aliasFilter, concreteIndexBoosts, searchPhaseController, executor, queryResultConsumer,
                         searchRequest, listener, shardIterators, timeProvider, clusterState, task, clusters);

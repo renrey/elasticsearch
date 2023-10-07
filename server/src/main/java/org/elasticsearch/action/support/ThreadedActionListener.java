@@ -55,6 +55,7 @@ public final class ThreadedActionListener<Response> extends ActionListener.Deleg
             if (listener instanceof ThreadedActionListener) {
                 return listener;
             }
+            //executor名字默认是用listener
             return new ThreadedActionListener<>(logger, threadPool, ThreadPool.Names.LISTENER, listener, false);
         }
     }
@@ -75,6 +76,7 @@ public final class ThreadedActionListener<Response> extends ActionListener.Deleg
 
     @Override
     public void onResponse(final Response response) {
+        // 使用executor在threadPool找到对应的线程池
         threadPool.executor(executor).execute(new ActionRunnable<Response>(delegate) {
             @Override
             public boolean isForceExecution() {

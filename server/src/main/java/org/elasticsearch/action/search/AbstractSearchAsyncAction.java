@@ -167,8 +167,10 @@ abstract class AbstractSearchAsyncAction<Result extends SearchPhaseResult> exten
 
     /**
      * This is the main entry point for a search. This method starts the search execution of the initial phase.
+     * 真正开始的search的地方
      */
     public final void start() {
+        // 无shard
         if (getNumShards() == 0) {
             //no search shards to search on, bail with empty response
             //(it happens with search across _all with no indices around and consistent with broadcast operations)
@@ -181,6 +183,11 @@ abstract class AbstractSearchAsyncAction<Result extends SearchPhaseResult> exten
                 ShardSearchFailure.EMPTY_ARRAY, clusters, null));
             return;
         }
+        // 有shard的情况
+        /**
+         * 就是执行这里的run
+         * @see AbstractSearchAsyncAction#run()
+         */
         executePhase(this);
     }
 
@@ -192,6 +199,9 @@ abstract class AbstractSearchAsyncAction<Result extends SearchPhaseResult> exten
         }
         if (shardsIts.size() > 0) {
             assert request.allowPartialSearchResults() != null : "SearchRequest missing setting for allowPartialSearchResults";
+            /**
+             * 不允许缺少一些shard结果时，检查
+             */
             if (request.allowPartialSearchResults() == false) {
                 final StringBuilder missingShards = new StringBuilder();
                 // Fail-fast verification of all shards being available
@@ -211,6 +221,7 @@ abstract class AbstractSearchAsyncAction<Result extends SearchPhaseResult> exten
                     throw new SearchPhaseExecutionException(getName(), msg, null, ShardSearchFailure.EMPTY_ARRAY);
                 }
             }
+            // es版本检查
             Version version = request.minCompatibleShardNode();
             if (version != null && Version.CURRENT.minimumCompatibilityVersion().equals(version) == false) {
                 if (checkMinimumVersion(shardsIts) == false) {
@@ -218,6 +229,10 @@ abstract class AbstractSearchAsyncAction<Result extends SearchPhaseResult> exten
                         request.minCompatibleShardNode());
                 }
             }
+            /**
+             * 向每组shard发起请求
+             */
+            // 遍历每组shard
             for (int i = 0; i < shardsIts.size(); i++) {
                 final SearchShardIterator shardRoutings = shardsIts.get(i);
                 assert shardRoutings.skip() == false;
@@ -421,6 +436,7 @@ abstract class AbstractSearchAsyncAction<Result extends SearchPhaseResult> exten
 
     private void executePhase(SearchPhase phase) {
         try {
+            // 执行run()
             phase.run();
         } catch (Exception e) {
             if (logger.isDebugEnabled()) {

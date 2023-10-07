@@ -92,6 +92,8 @@ public class RestSearchAction extends BaseRestHandler {
     @Override
     public RestChannelConsumer prepareRequest(final RestRequest request, final NodeClient client) throws IOException {
         SearchRequest searchRequest;
+        // 创建初始SearchRequest对象，未有值的
+        // 版本标识
         if (request.hasParam("min_compatible_shard_node")) {
             searchRequest = new SearchRequest(Version.fromString(request.param("min_compatible_shard_node")));
         } else {
@@ -109,12 +111,30 @@ public class RestSearchAction extends BaseRestHandler {
          * be null later. If that is confusing to you then you are in good
          * company.
          */
+        //  由于_update_by_query、_delete_by_query 都是调用parseSearchRequest方法，所以把size的处理单独提出来
         IntConsumer setSize = size -> searchRequest.source().size(size);
+
+        /**
+         * 把请求里内容转换成SearchRequest
+         */
         request.withContentOrSourceParamParserOrNull(parser ->
             parseSearchRequest(searchRequest, request, parser, client.getNamedWriteableRegistry(), setSize));
 
+        /**
+         * 最后返回的执行函数
+         */
         return channel -> {
+            /**
+             *1. 往client上再封装执行对象，作用：HttpChannel被关闭时，可取消当前未被完成的操作
+             * 而底层client是NodeClient ： 实际了执行RestAction时，需要先把当前的action转成TransportAction，再执行
+             * 也就说是转成TransportAction交给集群去执行！！！
+             */
             RestCancellableNodeClient cancelClient = new RestCancellableNodeClient(client, request.getHttpChannel());
+            /**
+             * 2. 执行
+             * searchRequest: 解析后的SearchRequest对象
+             * RestStatusToXContentListener:  action(Request)执行结果(成功、失败)的回调函数, 具体作用：把action的响应封装成rest 响应，并提交给RestChannel 发送响应
+             */
             cancelClient.execute(SearchAction.INSTANCE, searchRequest, new RestStatusToXContentListener<>(channel));
         };
     }

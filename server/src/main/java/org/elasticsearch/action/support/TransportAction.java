@@ -13,6 +13,8 @@ import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.action.ActionRequest;
 import org.elasticsearch.action.ActionRequestValidationException;
 import org.elasticsearch.action.ActionResponse;
+import org.elasticsearch.action.search.SearchRequest;
+import org.elasticsearch.action.search.TransportSearchAction;
 import org.elasticsearch.common.lease.Releasable;
 import org.elasticsearch.common.lease.Releasables;
 import org.elasticsearch.tasks.Task;
@@ -69,7 +71,9 @@ public abstract class TransportAction<Request extends ActionRequest, Response ex
         final Releasable unregisterChildNode = registerChildNode(request.getParentTask());
         final Task task;
         try {
-            // 注册一个task，拥有自增id
+            /**
+             * 1. 注册一个task，拥有自增id, 这个id是当前节点下的自增
+              */
             task = taskManager.register("transport", actionName, request);
         } catch (TaskCancelledException e) {
             unregisterChildNode.close();
@@ -156,7 +160,12 @@ public abstract class TransportAction<Request extends ActionRequest, Response ex
         /**
          * 执行执行链
          * -> 说明执行逻辑顺序都在proceed方法里
-         * 除了action filter外，具体只看子类的doExecute即可
+         * 就是前面把action filter先执行，目前就是xpack、ml插件，如果需要自定义插件再另外看
+         * 具体只看TransportAction类的doExecute即可！！！！
+         *
+         * 例如search的
+         * @see TransportSearchAction#doExecute(Task, SearchRequest, ActionListener)
+         *
          */
         requestFilterChain.proceed(task, actionName, request, listener);
     }

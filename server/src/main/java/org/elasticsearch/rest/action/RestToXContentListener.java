@@ -26,6 +26,12 @@ public class RestToXContentListener<Response extends ToXContentObject> extends R
         super(channel);
     }
 
+    /**
+     * 成功时，构建RestChannel的响应对象
+     * @param response
+     * @return
+     * @throws Exception
+     */
     @Override
     public final RestResponse buildResponse(Response response) throws Exception {
         return buildResponse(response, channel.newBuilder());
@@ -33,6 +39,8 @@ public class RestToXContentListener<Response extends ToXContentObject> extends R
 
     public RestResponse buildResponse(Response response, XContentBuilder builder) throws Exception {
         assert response.isFragment() == false; //would be nice if we could make default methods final
+        // 通过toXContent
+        // 实际参数基于RestChannel的request、XContentBuilder
         response.toXContent(builder, channel.request());
         return new BytesRestResponse(getStatus(response), builder);
     }

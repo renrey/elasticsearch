@@ -59,6 +59,7 @@ class SearchQueryThenFetchAsyncAction extends AbstractSearchAsyncAction<SearchPh
         // at the end of the search
         addReleasable(resultConsumer);
 
+        //是否需要fetch，当source设置了且没有元素时就不需要fetch
         boolean hasFetchPhase = request.source() == null ? true : request.source().size() > 0;
         progressListener.notifyListShards(SearchProgressListener.buildSearchShards(this.shardsIts),
             SearchProgressListener.buildSearchShards(toSkipShardsIts), clusters, hasFetchPhase);

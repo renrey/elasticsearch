@@ -35,6 +35,8 @@ import static org.elasticsearch.action.admin.cluster.node.tasks.get.GetTaskActio
 /**
  * A {@linkplain Client} that cancels tasks executed locally when the provided {@link HttpChannel}
  * is closed before completion.
+ *
+ * 作用：当HttpChannel被关闭时，如果本地task未完成，可以被取消
  */
 public class RestCancellableNodeClient extends FilterClient {
     private static final Map<HttpChannel, CloseListener> httpChannels = new ConcurrentHashMap<>();
@@ -75,8 +77,15 @@ public class RestCancellableNodeClient extends FilterClient {
     @Override
     public <Request extends ActionRequest, Response extends ActionResponse> void doExecute(
         ActionType<Response> action, Request request, ActionListener<Response> listener) {
+        /**
+         * 1. 为这个httpChannel，创建1个CloseListener
+         */
         CloseListener closeListener = httpChannels.computeIfAbsent(httpChannel, channel -> new CloseListener());
         TaskHolder taskHolder = new TaskHolder();
+        /**
+         * 2.  执行NodeClient的executeLocally : 即把action转成TransportAction, 交给集群执行
+         * 得到这次执行的task对象,为了拿到taskId
+         */
         Task task = client.executeLocally(action, request,
             new ActionListener<Response>() {
                 @Override
@@ -98,16 +107,31 @@ public class RestCancellableNodeClient extends FilterClient {
                 }
             });
         assert task instanceof CancellableTask : action.name() + " is not cancellable";
+        // task的唯一标识（）
         final TaskId taskId = new TaskId(client.getLocalNodeId(), task.getId());
+        /**
+         * 3。 把task注册到closeListener
+         * 作用：保存taskId
+         */
         closeListener.registerTask(taskHolder, taskId);
+        /**
+         * 4. 把closeListener(实际就是RestCancellableNodeClient自身)注册到httpChannel的关闭回调函数中
+         * 作用：当httpChannel执行关闭时，调用这个RestCancellableNodeClient的onResponse、onFailure，进行当前task的清理取消（实际往集群发送取消task的请求）
+         */
         closeListener.maybeRegisterChannel(httpChannel);
     }
 
     private void cancelTask(TaskId taskId) {
+        /**
+         *1。  生成1个CancelTasksRequest请求
+         */
         CancelTasksRequest req = new CancelTasksRequest()
             .setTaskId(taskId)
             .setReason("channel closed");
         // force the origin to execute the cancellation as a system user
+        /**
+         * 2. 发送取消请求到集群
+         */
         new OriginSettingClient(client, TASKS_ORIGIN).admin().cluster().cancelTasks(req, ActionListener.wrap(() -> {}));
     }
 
@@ -158,6 +182,7 @@ public class RestCancellableNodeClient extends FilterClient {
                 toCancel = new ArrayList<>(tasks);
                 tasks.clear();
             }
+            // 每个taskId都取消
             for (TaskId taskId : toCancel) {
                 cancelTask(taskId);
             }

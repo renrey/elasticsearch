@@ -352,6 +352,9 @@ import org.elasticsearch.threadpool.ThreadPool;
 
 import java.util.Map;
 
+/**
+ * 定义了响应结果的回调函数是交给线程池执行的（异步）
+ */
 public abstract class AbstractClient implements Client {
 
     protected final Logger logger;
@@ -366,6 +369,7 @@ public abstract class AbstractClient implements Client {
         this.threadPool = threadPool;
         this.admin = new Admin(this);
         this.logger =LogManager.getLogger(this.getClass());
+        // 线程池，默认使用threadPool中名字为listener的（ThreadPool.Names.LISTENER）
         this.threadedWrapper = new ThreadedActionListener.Wrapper(logger, settings, threadPool);
     }
 
@@ -399,7 +403,7 @@ public abstract class AbstractClient implements Client {
     public final <Request extends ActionRequest, Response extends ActionResponse> void execute(
         ActionType<Response> action, Request request, ActionListener<Response> listener) {
         try {
-            //保存回调函数
+            // 包装了原来已定义好的响应回调函数，作用是执行定义好的回调函数是在线程池执行的，达到响应是异步的效果
             listener = threadedWrapper.wrap(listener);
             // 真正执行请求
             /**

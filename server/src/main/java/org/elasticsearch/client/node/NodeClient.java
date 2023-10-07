@@ -33,6 +33,9 @@ import java.util.function.Supplier;
 
 /**
  * Client that executes actions on the local node.
+ *  在当前节点（本地）执行action的逻辑
+ *  实际的作用是把action转成TransportAction, 交给集群内部执行！！！
+ *  继承AbstractClient的作用：响应的回调都是提交线程池执行，就是action执行完成后，后置的响应回调处理都是异步的
  */
 public class NodeClient extends AbstractClient {
 
@@ -85,13 +88,14 @@ public class NodeClient extends AbstractClient {
      * Execute an {@link ActionType} locally, returning that {@link Task} used to track it, and linking an {@link ActionListener}.
      * Prefer this method if you don't need access to the task when listening for the response. This is the method used to implement
      * the {@link Client} interface.
-     *
+     * 这个会返回Task对象，用于追踪执行情况
      * @throws TaskCancelledException if the request's parent task has been cancelled already
      */
     public <    Request extends ActionRequest,
                 Response extends ActionResponse
             > Task executeLocally(ActionType<Response> action, Request request, ActionListener<Response> listener) {
         // 获取当前action(ActionType)的绑定通信操作(TransportAction),并传入request执行发送请求
+         // 根据ActionType找到对应的transportAction，然后execute执行
         /**
          * 例如IndexAction使用TransportIndexAction
          * @see TransportIndexAction
@@ -120,6 +124,7 @@ public class NodeClient extends AbstractClient {
     public <    Request extends ActionRequest,
                 Response extends ActionResponse
             > Task executeLocally(ActionType<Response> action, Request request, TaskListener<Response> listener) {
+        // 根据ActionType找到对应的transportAction，然后execute执行
         return transportAction(action).execute(request, listener);
     }
 

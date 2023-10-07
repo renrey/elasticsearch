@@ -155,14 +155,25 @@ public class RestController implements HttpServerTransport.Dispatcher {
      */
     protected void registerHandler(RestRequest.Method method, String path, RestHandler handler) {
         if (handler instanceof BaseRestHandler) {
+            // 监控使用
             usageService.addRestHandler((BaseRestHandler) handler);
         }
+        /**
+         * 正常注册（RestHandler）
+         *
+         *  handlerWrapper.apply 用于往当前handler封装前置的通用插件，例如安全的
+         *  最后还是RestHandler
+         */
         registerHandlerNoWrap(method, path, handlerWrapper.apply(handler));
     }
 
     private void registerHandlerNoWrap(RestRequest.Method method, String path, RestHandler maybeWrappedHandler) {
+        /**
+         * 往handlers加入（or更新），对于path、method的
+         */
         handlers.insertOrUpdate(path,
             new MethodHandlers(path).addMethod(method, maybeWrappedHandler),
+            // 如果存在，更新处理的代码
             (mHandlers, newMHandler) -> mHandlers.addMethod(method, maybeWrappedHandler));
     }
 
@@ -174,6 +185,7 @@ public class RestController implements HttpServerTransport.Dispatcher {
             registerAsDeprecatedHandler(route.getMethod(), route.getPath(), handler, route.getDeprecationMessage());
         } else {
             // it's just a normal route
+            //  正常注册handler
             registerHandler(route.getMethod(), route.getPath(), handler);
         }
     }
@@ -265,7 +277,11 @@ public class RestController implements HttpServerTransport.Dispatcher {
             } else {
                 threadContext.putHeader(SYSTEM_INDEX_ACCESS_CONTROL_HEADER_KEY, Boolean.TRUE.toString());
             }
-
+            /**
+             * 对应handler执行请求
+             * 最底层是BaseRestHandler （每个action的父类）
+             *@see  org.elasticsearch.rest.BaseRestHandler#handleRequest(org.elasticsearch.rest.RestRequest, org.elasticsearch.rest.RestChannel, org.elasticsearch.client.node.NodeClient)
+             */
             handler.handleRequest(request, responseChannel, client);
         } catch (Exception e) {
             responseChannel.sendResponse(new BytesRestResponse(responseChannel, e));
@@ -348,6 +364,9 @@ public class RestController implements HttpServerTransport.Dispatcher {
                         return;
                     }
                 } else {
+                    /**
+                     * 认为请求可以被处理，且找到handler，调用
+                     */
                     dispatchRequest(request, channel, handler);
                     return;
                 }

@@ -507,6 +507,9 @@ public class ActionModule extends AbstractModule {
             }
         }
         ActionRegistry actions = new ActionRegistry();
+        /**
+         * 给不同的actiontype，注册 TransportAction
+         */
 
         actions.register(MainAction.INSTANCE, TransportMainAction.class);
         actions.register(NodesInfoAction.INSTANCE, TransportNodesInfoAction.class);
