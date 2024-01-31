@@ -64,6 +64,9 @@ public final class SimilarityService extends AbstractIndexComponent {
                 };
             }
         });
+        /**
+         * BM25的lucene相似度对象
+         */
         defaults.put("BM25", version -> {
             final LegacyBM25Similarity similarity = SimilarityProviders.createBM25Similarity(Settings.EMPTY, version);
             return () -> similarity;

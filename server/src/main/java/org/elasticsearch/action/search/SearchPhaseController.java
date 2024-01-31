@@ -146,6 +146,7 @@ public final class SearchPhaseController {
         if (topDocs.isEmpty() && reducedCompletionSuggestions.isEmpty()) {
             return SortedTopDocs.EMPTY;
         }
+        // 合并
         final TopDocs mergedTopDocs = mergeTopDocs(topDocs, size, ignoreFrom ? 0 : from);
         final ScoreDoc[] mergedScoreDocs = mergedTopDocs == null ? EMPTY_DOCS : mergedTopDocs.scoreDocs;
         ScoreDoc[] scoreDocs = mergedScoreDocs;
@@ -201,7 +202,9 @@ public final class SearchPhaseController {
         } else if (topDocs instanceof TopFieldDocs) {
             TopFieldDocs firstTopDocs = (TopFieldDocs) topDocs;
             final Sort sort = new Sort(firstTopDocs.fields);
+            // 把result转成数组
             final TopFieldDocs[] shardTopDocs = results.toArray(new TopFieldDocs[numShards]);
+            // 合并
             mergedTopDocs = TopDocs.merge(sort, from, topN, shardTopDocs, setShardIndex);
         } else {
             final TopDocs[] shardTopDocs = results.toArray(new TopDocs[numShards]);
@@ -238,6 +241,7 @@ public final class SearchPhaseController {
      */
     public IntArrayList[] fillDocIdsToLoad(int numShards, ScoreDoc[] shardDocs) {
         IntArrayList[] docIdsToLoad = new IntArrayList[numShards];
+        // 遍历doc，按照shard划分docid
         for (ScoreDoc shardDoc : shardDocs) {
             IntArrayList shardDocIdsToLoad = docIdsToLoad[shardDoc.shardIndex];
             if (shardDocIdsToLoad == null) {
@@ -263,6 +267,7 @@ public final class SearchPhaseController {
         }
         ScoreDoc[] sortedDocs = reducedQueryPhase.sortedTopDocs.scoreDocs;
         SearchHits hits = getHits(reducedQueryPhase, ignoreFrom, fetchResults, resultsLookup);
+        // suggest相关
         if (reducedQueryPhase.suggest != null) {
             if (fetchResults.isEmpty() == false) {
                 int currentOffset = hits.getHits().length;
@@ -314,15 +319,21 @@ public final class SearchPhaseController {
             entry.fetchResult().initCounter();
         }
         int from = ignoreFrom ? 0 : reducedQueryPhase.from;
+        // 本次实际需要命中数据（即从from到size）
         int numSearchHits = (int) Math.min(reducedQueryPhase.fetchHits - from, reducedQueryPhase.size);
         // with collapsing we can have more fetch hits than sorted docs
         // also we need to take into account that we potentially have completion suggestions stored in the scoreDocs array
+
         numSearchHits = Math.min(sortedTopDocs.scoreDocs.length - sortedTopDocs.numberOfCompletionsSuggestions, numSearchHits);
         // merge hits
+        /**
+         * 最后命中hit的doc
+         */
         List<SearchHit> hits = new ArrayList<>();
         if (fetchResults.isEmpty() == false) {
             for (int i = 0; i < numSearchHits; i++) {
                 ScoreDoc shardDoc = sortedTopDocs.scoreDocs[i];
+                // 寻找对应shard的结果函数
                 SearchPhaseResult fetchResultProvider = resultsLookup.apply(shardDoc.shardIndex);
                 if (fetchResultProvider == null) {
                     // this can happen if we are hitting a shard failure during the fetch phase
@@ -331,10 +342,13 @@ public final class SearchPhaseController {
                     // TODO it would be nice to assert this in the future
                     continue;
                 }
+                // 寻找对应shard的结果
                 FetchSearchResult fetchResult = fetchResultProvider.fetchResult();
+                // 前doc的数据在结果下标，下一次+1
                 final int index = fetchResult.counterGetAndIncrement();
                 assert index < fetchResult.hits().getHits().length : "not enough hits fetched. index [" + index + "] length: "
                     + fetchResult.hits().getHits().length;
+                // 从结果拿当前doc
                 SearchHit searchHit = fetchResult.hits().getHits()[index];
                 searchHit.shard(fetchResult.getSearchShardTarget());
                 if (sortedTopDocs.isSortedByField) {
@@ -346,6 +360,7 @@ public final class SearchPhaseController {
                 } else {
                     searchHit.score(shardDoc.score);
                 }
+                // 加入hits集合
                 hits.add(searchHit);
             }
         }
@@ -467,6 +482,7 @@ public final class SearchPhaseController {
         }
         final InternalAggregations aggregations = reduceAggs(aggReduceContextBuilder, performFinalReduce, bufferedAggs);
         final SearchProfileShardResults shardResults = profileResults.isEmpty() ? null : new SearchProfileShardResults(profileResults);
+        // doc集合
         final SortedTopDocs sortedTopDocs = sortDocs(isScrollRequest, bufferedTopDocs, from, size, reducedCompletionSuggestions);
         final TotalHits totalHits = topDocsStats.getTotalHits();
         return new ReducedQueryPhase(totalHits, topDocsStats.fetchHits, topDocsStats.getMaxScore(),
@@ -519,6 +535,7 @@ public final class SearchPhaseController {
             return SearchService.DEFAULT_SIZE;
         }
         SearchSourceBuilder source = request.source();
+        // size+from
         return (source.size() == -1 ? SearchService.DEFAULT_SIZE : source.size()) +
             (source.from() == -1 ? SearchService.DEFAULT_FROM : source.from());
     }
@@ -648,6 +665,7 @@ public final class SearchPhaseController {
                     totalHitsRelation = TotalHits.Relation.GREATER_THAN_OR_EQUAL_TO;
                 }
             }
+            // 这次具体query文档数
             fetchHits += topDocs.topDocs.scoreDocs.length;
             if (Float.isNaN(topDocs.maxScore) == false) {
                 maxScore = Math.max(maxScore, topDocs.maxScore);

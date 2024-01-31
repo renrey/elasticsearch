@@ -45,6 +45,7 @@ final class CountedCollector<R extends SearchPhaseResult> {
      * Sets the result to the given array index and then runs {@link #countDown()}
      */
     void onResult(R result) {
+        // 保存结果，并计数-1
         resultConsumer.consumeResult(result,  this::countDown);
     }
 

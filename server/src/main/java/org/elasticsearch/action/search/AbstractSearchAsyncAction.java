@@ -22,6 +22,7 @@ import org.elasticsearch.action.search.TransportSearchAction.SearchTimeProvider;
 import org.elasticsearch.action.support.TransportActions;
 import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.cluster.routing.GroupShardsIterator;
+import org.elasticsearch.common.breaker.CircuitBreaker;
 import org.elasticsearch.common.lease.Releasable;
 import org.elasticsearch.common.lease.Releasables;
 import org.elasticsearch.common.util.concurrent.AbstractRunnable;
@@ -49,6 +50,8 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiFunction;
+import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /**
@@ -130,6 +133,7 @@ abstract class AbstractSearchAsyncAction<Result extends SearchPhaseResult> exten
         // it's number of active shards but use 1 as the default if no replica of a shard is active at this point.
         // on a per shards level we use shardIt.remaining() to increment the totalOps pointer but add 1 for the current shard result
         // we process hence we add one for the non active partition here.
+        // 期望执行shard数量
         this.expectedTotalOps = shardsIts.totalSizeWith1ForEmpty();
         this.maxConcurrentRequestsPerNode = maxConcurrentRequestsPerNode;
         // in the case were we have less shards than maxConcurrentRequestsPerNode we don't need to throttle
@@ -238,6 +242,7 @@ abstract class AbstractSearchAsyncAction<Result extends SearchPhaseResult> exten
                 assert shardRoutings.skip() == false;
                 assert shardItIndexMap.containsKey(shardRoutings);
                 int shardIndex = shardItIndexMap.get(shardRoutings);
+                //执行shard发送
                 performPhaseOnShard(shardIndex, shardRoutings, shardRoutings.nextOrNull());
             }
         }
@@ -309,18 +314,26 @@ abstract class AbstractSearchAsyncAction<Result extends SearchPhaseResult> exten
             final PendingExecutions pendingExecutions = throttleConcurrentRequests ?
                 pendingExecutionsPerNode.computeIfAbsent(shard.getNodeId(), n -> new PendingExecutions(maxConcurrentRequestsPerNode))
                 : null;
+            // 执行操作定义
             Runnable r = () -> {
                 final Thread thread = Thread.currentThread();
                 try {
+                    // 对目标shard执行当前阶段操作
+                    // 发送请求
                     executePhaseOnShard(shardIt, shard,
+                        // 处理响应结果的回调函数
                         new SearchActionListener<Result>(shard, shardIndex) {
                             @Override
                             public void innerOnResponse(Result result) {
                                 try {
+                                    /**
+                                     * 正常响应
+                                     */
                                     onShardResult(result, shardIt);
                                 } catch (Exception exc) {
                                     onShardFailure(shardIndex, shard, shardIt, exc);
                                 } finally {
+                                    // 执行pendingExecutions下一个待执行的操作
                                     executeNext(pendingExecutions, thread);
                                 }
                             }
@@ -346,9 +359,14 @@ abstract class AbstractSearchAsyncAction<Result extends SearchPhaseResult> exten
                     }
                 }
             };
+            /**
+             * 被限流了，就是当前请求正在进行的通信请求到达上限
+             * 通过PendingExecutions的tryRun尝试是否能执行
+             */
             if (throttleConcurrentRequests) {
                 pendingExecutions.tryRun(r);
             } else {
+                // 未限流，正常run，当前线程直接运行
                 r.run();
             }
         }
@@ -478,8 +496,15 @@ abstract class AbstractSearchAsyncAction<Result extends SearchPhaseResult> exten
             }
             onShardGroupFailure(shardIndex, shard, e);
         }
+        // 执行完数量+1
         final int totalOps = this.totalOps.incrementAndGet();
+        /**
+         * 判断是否需要到下一步
+         */
         if (totalOps == expectedTotalOps) {
+            /**
+             * 执行下一步
+             */
             onPhaseDone();
         } else if (totalOps > expectedTotalOps) {
             throw new AssertionError("unexpected higher total ops [" + totalOps + "] compared to expected [" + expectedTotalOps + "]",
@@ -564,10 +589,22 @@ abstract class AbstractSearchAsyncAction<Result extends SearchPhaseResult> exten
         if (logger.isTraceEnabled()) {
             logger.trace("got first-phase result from {}", result != null ? result.getSearchShardTarget() : null);
         }
+        /**
+         * 使用外面定义的结果回调对这次shard的结果进行处理，完成后执行下一个处理函数
+         * 下一个函数() -> onShardResultConsumed(result, shardIt)
+         *
+         * consumeResult 消费当前结果，实际是合并shard结果
+         * next：消费完当前shard结果的处理
+         * 下一个onShardResultConsumed主要是当前search查询中，这次shard查询的分片信息更新
+         * 例如
+         * @see SearchPhaseController#newSearchPhaseResults(Executor, CircuitBreaker, SearchProgressListener, SearchRequest, int, Consumer)
+         * @see  org.elasticsearch.action.search.QueryPhaseResultConsumer#consumeResult(org.elasticsearch.search.SearchPhaseResult, java.lang.Runnable)
+         */
         results.consumeResult(result, () -> onShardResultConsumed(result, shardIt));
     }
 
     private void onShardResultConsumed(Result result, SearchShardIterator shardIt) {
+        // 成功数+1
         successfulOps.incrementAndGet();
         // clean a previous error on this shard group (note, this code will be serialized on the same shardIndex value level
         // so its ok concurrency wise to miss potentially the shard failures being created because of another failure
@@ -581,6 +618,7 @@ abstract class AbstractSearchAsyncAction<Result extends SearchPhaseResult> exten
         // cause the successor to read a wrong value from successfulOps if second phase is very fast ie. count etc.
         // increment all the "future" shards to update the total ops since we some may work and some may not...
         // and when that happens, we break on total ops, so we must maintain them
+        // 完成shard执行
         successfulShardExecution(shardIt);
     }
 
@@ -707,11 +745,19 @@ abstract class AbstractSearchAsyncAction<Result extends SearchPhaseResult> exten
      * @see #onShardResult(SearchPhaseResult, SearchShardIterator)
      */
     final void onPhaseDone() {  // as a tribute to @kimchy aka. finishHim()
+        /**
+         * queryThenFetch : 进入fetch阶段
+         * @see org.elasticsearch.action.search.FetchSearchPhase#run()
+         */
         executeNextPhase(this, getNextPhase(results, this));
     }
 
     @Override
     public final Transport.Connection getConnection(String clusterAlias, String nodeId) {
+        /**
+         * 使用外部定义的获取链接函数来获取链接
+         * @see TransportSearchAction#buildConnectionLookup(String, Function, BiFunction, BiFunction)
+         */
         Transport.Connection conn = nodeIdToConnection.apply(clusterAlias, nodeId);
         Version minVersion = request.minCompatibleShardNode();
         if (minVersion != null && conn != null && conn.getVersion().before(minVersion)) {

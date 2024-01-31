@@ -46,6 +46,12 @@ import static io.netty.channel.internal.ChannelUtils.MAX_BYTES_PER_GATHERING_WRI
  * control how bytes end up being copied to direct memory. If we simply disabled netty pooling, we would rely
  * on the JDK's internal thread local buffer pooling. Instead, this class allows us to create a one thread
  * local buffer with a defined size.
+ *
+ * 1。 netty的直接内存池化在这里去控制
+ * 2。可控制线程自己的直接内存池大小,通过MAX_BYTES_PER_WRITE
+ *
+ * 其实就是可以控制一次写入大小（通过直接内存），因为netty就是固定1024字节，而这里扩展了下，也像netty实现了本地直接内存缓存，不过可以通过调整参数，
+ * 使得buffer大小更大，从而1次写入的数据更大（buffer大小大了）
  */
 @SuppressForbidden(reason = "Channel#write")
 public class CopyBytesSocketChannel extends Netty4NioSocketChannel {
@@ -85,11 +91,15 @@ public class CopyBytesSocketChannel extends Netty4NioSocketChannel {
             } else {
                 // Zero length buffers are not added to nioBuffers by ChannelOutboundBuffer, so there is no need
                 // to check if the total size of all the buffers is non-zero.
+
+                // 获取当前线程自己的1个直接内存空间buffer
                 ByteBuffer ioBuffer = getIoBuffer();
+                // 拷贝数据到线程自己的直接内存buffer
                 copyBytes(nioBuffers, nioBufferCnt, ioBuffer);
                 ioBuffer.flip();
 
                 int attemptedBytes = ioBuffer.remaining();
+                // 写入channel使用线程自己的直接内存buffer
                 final int localWrittenBytes = writeToSocketChannel(javaChannel(), ioBuffer);
                 if (localWrittenBytes <= 0) {
                     incompleteWrite(true);
@@ -131,7 +141,9 @@ public class CopyBytesSocketChannel extends Netty4NioSocketChannel {
     }
 
     private static ByteBuffer getIoBuffer() {
+        // 创建or获取当前线程的直接内存buffer对象（线程复用这个直接内存空间）
         ByteBuffer ioBuffer = CopyBytesSocketChannel.ioBuffer.get();
+        // 清空本地线程直接内存的数据
         ioBuffer.clear();
         return ioBuffer;
     }

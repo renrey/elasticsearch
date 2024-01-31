@@ -94,9 +94,18 @@ final class FetchSearchPhase extends SearchPhase {
     private void innerRun() throws Exception {
         final int numShards = context.getNumShards();
         final boolean isScrollSearch = context.getRequest().scroll() != null;
+        // 每个shard的结果
         final List<SearchPhaseResult> phaseResults = queryResults.asList();
+        /**
+         * 生成需要docid
+         * resultConsumer是query的
+         */
         final SearchPhaseController.ReducedQueryPhase reducedQueryPhase = resultConsumer.reduce();
+        // 结果只有1个shard的结果可以优化
         final boolean queryAndFetchOptimization = queryResults.length() == 1;
+        /**
+         * 完成后所有shard的fetch后，执行
+         */
         final Runnable finishPhase = ()
             -> moveToNextPhase(searchPhaseController, queryResults, reducedQueryPhase, queryAndFetchOptimization ?
             queryResults : fetchResults.getAtomicArray());
@@ -107,6 +116,7 @@ final class FetchSearchPhase extends SearchPhase {
             finishPhase.run();
         } else {
             ScoreDoc[] scoreDocs = reducedQueryPhase.sortedTopDocs.scoreDocs;
+            // shard数组，每个元素是对应的docid数组
             final IntArrayList[] docIdsToLoad = searchPhaseController.fillDocIdsToLoad(numShards, scoreDocs);
             // no docs to fetch -- sidestep everything and return
             if (scoreDocs.length == 0) {
@@ -119,10 +129,16 @@ final class FetchSearchPhase extends SearchPhase {
                 final ScoreDoc[] lastEmittedDocPerShard = isScrollSearch ?
                     searchPhaseController.getLastEmittedDocPerShard(reducedQueryPhase, numShards)
                     : null;
+                /**
+                 * fetch阶段请求完成的回调主对象
+                 * 统计shard完成数，完成后会调用finishPhase
+                 */
                 final CountedCollector<FetchSearchResult> counter = new CountedCollector<>(fetchResults,
                     docIdsToLoad.length, // we count down every shard in the result no matter if we got any results or not
                     finishPhase, context);
+                // 遍历分片
                 for (int i = 0; i < docIdsToLoad.length; i++) {
+                    // 分片信息
                     IntArrayList entry = docIdsToLoad[i];
                     SearchPhaseResult queryResult = queryResults.get(i);
                     if (entry == null) { // no results for this shard ID
@@ -136,12 +152,15 @@ final class FetchSearchPhase extends SearchPhase {
                         // in any case we count down this result since we don't talk to this shard anymore
                         counter.countDown();
                     } else {
+                        // 正常
                         SearchShardTarget searchShardTarget = queryResult.getSearchShardTarget();
                         Transport.Connection connection = context.getConnection(searchShardTarget.getClusterAlias(),
                             searchShardTarget.getNodeId());
+                        // 生成fetch请求
                         ShardFetchSearchRequest fetchSearchRequest = createFetchRequest(queryResult.queryResult().getContextId(), i, entry,
                             lastEmittedDocPerShard, searchShardTarget.getOriginalIndices(), queryResult.getShardSearchRequest(),
                             queryResult.getRescoreDocIds());
+                        // 执行请求
                         executeFetch(queryResult.getShardIndex(), searchShardTarget, counter, fetchSearchRequest, queryResult.queryResult(),
                             connection);
                     }
@@ -168,6 +187,9 @@ final class FetchSearchPhase extends SearchPhase {
                 public void innerOnResponse(FetchSearchResult result) {
                     try {
                         progressListener.notifyFetchResult(shardIndex);
+                        /**
+                         * 结果处理!!!
+                         */
                         counter.onResult(result);
                     } catch (Exception e) {
                         context.onPhaseFailure(FetchSearchPhase.this, "", e);
@@ -214,8 +236,21 @@ final class FetchSearchPhase extends SearchPhase {
                                  AtomicArray<SearchPhaseResult> queryPhaseResults,
                                  SearchPhaseController.ReducedQueryPhase reducedQueryPhase,
                                  AtomicArray<? extends SearchPhaseResult> fetchResultsArr) {
+        /**
+         * 合并结果，生成内部响应结果
+         * fetchResultsArr: fetch的结果
+         */
         final InternalSearchResponse internalResponse = searchPhaseController.merge(context.getRequest().scroll() != null,
             reducedQueryPhase, fetchResultsArr.asList(), fetchResultsArr::get);
+        /**
+         * 把内部响应结果传入
+         * 下个阶段nextPhaseFactory.apply
+         *
+         * @see FetchSearchPhase#FetchSearchPhase(SearchPhaseResults, SearchPhaseController, AggregatedDfs, SearchPhaseContext) 中lambda
+         *
+         * 实际执行-》就是发送响应
+         * @see ExpandSearchPhase#run()
+         */
         context.executeNextPhase(this, nextPhaseFactory.apply(internalResponse, queryPhaseResults));
     }
 }

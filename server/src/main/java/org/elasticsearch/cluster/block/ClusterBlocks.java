@@ -34,6 +34,7 @@ import static java.util.stream.Collectors.toSet;
 
 /**
  * Represents current cluster level blocks to block dirty operations done against the cluster.
+ * 表示当前集群级块，以阻止对集群执行的脏操作。
  */
 public class ClusterBlocks extends AbstractDiffable<ClusterBlocks> {
     public static final ClusterBlocks EMPTY_CLUSTER_BLOCK = new ClusterBlocks(emptySet(), ImmutableOpenMap.of());

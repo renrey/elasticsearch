@@ -1673,6 +1673,7 @@ public class IndexShard extends AbstractIndexShardComponent implements IndicesCl
     /**
      * opens the engine on top of the existing lucene engine and translog.
      * Operations from the translog will be replayed to bring lucene up to date.
+     * 创建基础lucene
      **/
     public void openEngineAndRecoverFromTranslog() throws IOException {
         recoveryState.validateCurrentStage(RecoveryState.Stage.INDEX);
@@ -2928,6 +2929,7 @@ public class IndexShard extends AbstractIndexShardComponent implements IndicesCl
                 this.warmer.warm(reader);
             }
         };
+        // shard的enginee配置、包含lucene参数
         return new EngineConfig(
                 shardId,
                 threadPool,

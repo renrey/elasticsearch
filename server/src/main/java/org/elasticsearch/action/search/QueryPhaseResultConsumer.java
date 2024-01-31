@@ -105,8 +105,12 @@ public class QueryPhaseResultConsumer extends ArraySearchPhaseResults<SearchPhas
     @Override
     public void consumeResult(SearchPhaseResult result, Runnable next) {
         super.consumeResult(result, () -> {});
+        //
         QuerySearchResult querySearchResult = result.queryResult();
         progressListener.notifyQueryResult(querySearchResult.getShardIndex());
+        /**
+         * 处理query结果
+         */
         pendingMerges.consume(querySearchResult, next);
     }
 
@@ -119,7 +123,11 @@ public class QueryPhaseResultConsumer extends ArraySearchPhaseResults<SearchPhas
         }
 
         // ensure consistent ordering
+        // 先shard排序
         pendingMerges.sortBuffer();
+        /**
+         * 把buffer中每个result的doc数据合并在一起
+         */
         final TopDocsStats topDocsStats = pendingMerges.consumeTopDocsStats();
         final List<TopDocs> topDocsList = pendingMerges.consumeTopDocs();
         final List<InternalAggregations> aggsList = pendingMerges.consumeAggs();
@@ -128,6 +136,9 @@ public class QueryPhaseResultConsumer extends ArraySearchPhaseResults<SearchPhas
             // Add an estimate of the final reduce size
             breakerSize = pendingMerges.addEstimateAndMaybeBreak(pendingMerges.estimateRamBytesUsedForReduce(breakerSize));
         }
+        /**
+         * 生成结果，并生成phrase对象！！！
+         */
         SearchPhaseController.ReducedQueryPhase reducePhase = controller.reducedQueryPhase(results.asList(), aggsList,
             topDocsList, topDocsStats, pendingMerges.numReducePhases, false, aggReduceContextBuilder, performFinalReduce);
         if (hasAggs
@@ -151,23 +162,31 @@ public class QueryPhaseResultConsumer extends ArraySearchPhaseResults<SearchPhas
                                       MergeResult lastMerge,
                                       int numReducePhases) {
         // ensure consistent ordering
+        // 先按shard排序
         Arrays.sort(toConsume, Comparator.comparingInt(QuerySearchResult::getShardIndex));
 
+        // 合并统计信息
         for (QuerySearchResult result : toConsume) {
             topDocsStats.add(result.topDocs(), result.searchTimedOut(), result.terminatedEarly());
         }
 
+        // 结果doc
         final TopDocs newTopDocs;
         if (hasTopDocs) {
             List<TopDocs> topDocsList = new ArrayList<>();
+            // 放入上次合并的结果
             if (lastMerge != null) {
                 topDocsList.add(lastMerge.reducedTopDocs);
             }
+            // 遍历本次待处理的
             for (QuerySearchResult result : toConsume) {
                 TopDocsAndMaxScore topDocs = result.consumeTopDocs();
                 setShardIndex(topDocs.topDocs, result.getShardIndex());
                 topDocsList.add(topDocs.topDocs);
             }
+            // 合并doc
+            // topN即，from+size的数量
+            // 注意这里from是0，即合并后是from+size数量的数据
             newTopDocs = mergeTopDocs(topDocsList,
                 // we have to merge here in the same way we collect on a shard
                 topNSize, 0);
@@ -318,17 +337,23 @@ public class QueryPhaseResultConsumer extends ArraySearchPhaseResults<SearchPhas
                     }
                     // add one if a partial merge is pending
                     int size = buffer.size() + (hasPartialReduce ? 1 : 0);
+                    // 执行一次去重合并
                     if (size >= batchReduceSize) {
                         hasPartialReduce = true;
                         executeNextImmediately = false;
+                        // 克隆当前的result buffer，生成数组
                         QuerySearchResult[] clone = buffer.stream().toArray(QuerySearchResult[]::new);
                         MergeTask task = new MergeTask(clone, aggsCurrentBufferSize, new ArrayList<>(emptyResults), next);
+                        // 清空当前已有的buffer
                         aggsCurrentBufferSize = 0;
                         buffer.clear();
                         emptyResults.clear();
+                        // 提交处理前面buffer result的task
                         queue.add(task);
+                        // 这里就是把task拿出来执行
                         tryExecuteNext();
                     }
+                    // 把这次的result加入到buffer
                     buffer.add(result);
                 }
             }
@@ -370,6 +395,7 @@ public class QueryPhaseResultConsumer extends ArraySearchPhaseResults<SearchPhas
                     return;
                 }
                 runningTask.compareAndSet(task, null);
+                // 更新合并结果
                 mergeResult = newResult;
                 if (hasAggs) {
                     // Update the circuit breaker to remove the size of the source aggregations
@@ -403,6 +429,7 @@ public class QueryPhaseResultConsumer extends ArraySearchPhaseResults<SearchPhas
                     final MergeResult newMerge;
                     try {
                         final QuerySearchResult[] toConsume = task.consumeBuffer();
+                        // 没待处理的，终止
                         if (toConsume == null) {
                             return;
                         }
@@ -410,6 +437,9 @@ public class QueryPhaseResultConsumer extends ArraySearchPhaseResults<SearchPhas
                         addEstimateAndMaybeBreak(estimatedMergeSize);
                         estimatedTotalSize += estimatedMergeSize;
                         ++ numReducePhases;
+                        /**
+                         * 合并结果，合并成from+size数量的doc
+                         */
                         newMerge = partialReduce(toConsume, task.emptyResults, topDocsStats, thisMergeResult, numReducePhases);
                     } catch (Exception t) {
                         onMergeFailure(t);

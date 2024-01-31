@@ -68,7 +68,15 @@ class SearchQueryThenFetchAsyncAction extends AbstractSearchAsyncAction<SearchPh
     protected void executePhaseOnShard(final SearchShardIterator shardIt,
                                        final SearchShardTarget shard,
                                        final SearchActionListener<SearchPhaseResult> listener) {
+        // 重写请求
         ShardSearchRequest request = rewriteShardSearchRequest(super.buildShardSearchRequest(shardIt, listener.requestIndex));
+        // 发送请求
+        /**
+         *getConnection: 获取目标节点连接
+         *request: 重写后的请求
+         * task: 外面整体rest请求task
+         *listener: 这里的是对shard结果处理函数，以及在当前action中本次shard操作消息更新
+         */
         getSearchTransport().sendExecuteQuery(getConnection(shard.getClusterAlias(), shard.getNodeId()), request, getTask(), listener);
     }
 

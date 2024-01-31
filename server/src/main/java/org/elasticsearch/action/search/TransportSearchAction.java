@@ -501,6 +501,9 @@ public class TransportSearchAction extends HandledTransportAction<SearchRequest,
                                     ClusterState clusterState, ActionListener<SearchResponse> listener,
                                     SearchContextId searchContext,
                                     SearchAsyncActionProvider searchAsyncActionProvider) {
+        /**
+         * remoteConnections: 返回null
+         */
         executeSearch((SearchTask)task, timeProvider, searchRequest, localIndices, Collections.emptyList(),
             (clusterName, nodeId) -> null, clusterState, Collections.emptyMap(), listener, SearchResponse.Clusters.EMPTY,
             searchContext, searchAsyncActionProvider);
@@ -672,6 +675,10 @@ public class TransportSearchAction extends HandledTransportAction<SearchRequest,
             }
         }
         final DiscoveryNodes nodes = clusterState.nodes();
+
+        /**
+         *  search action中用于获取不同node连接的函数
+         */
         BiFunction<String, String, Transport.Connection> connectionLookup = buildConnectionLookup(searchRequest.getLocalClusterAlias(),
             nodes::get, remoteConnections, searchTransportService::getConnection);
         final Executor asyncSearchExecutor = asyncSearchExecutor(concreteLocalIndices, clusterState);
@@ -712,10 +719,16 @@ public class TransportSearchAction extends HandledTransportAction<SearchRequest,
         return (clusterAlias, nodeId) -> {
             final DiscoveryNode discoveryNode;
             final boolean remoteCluster;
+            // 本集群的节点
             if (clusterAlias == null || requestClusterAlias != null) {
                 assert requestClusterAlias == null || requestClusterAlias.equals(clusterAlias);
+                /**
+                 * @see org.elasticsearch.cluster.node.DiscoveryNodes#get(java.lang.String)
+                 */
+                // 本集群节点
                 discoveryNode = localNodes.apply(nodeId);
                 remoteCluster = false;
+            // 跨集群ccs
             } else {
                 discoveryNode = remoteNodes.apply(clusterAlias, nodeId);
                 remoteCluster = true;
@@ -723,6 +736,10 @@ public class TransportSearchAction extends HandledTransportAction<SearchRequest,
             if (discoveryNode == null) {
                 throw new IllegalStateException("no node found for id: " + nodeId);
             }
+            /**
+             * 通过发现节点、是否远程集群获取发现节点的连接
+             * @see org.elasticsearch.action.search.SearchTransportService#getConnection(java.lang.String, org.elasticsearch.cluster.node.DiscoveryNode)
+             */
             return nodeToConnection.apply(remoteCluster ? clusterAlias : null, discoveryNode);
         };
     }

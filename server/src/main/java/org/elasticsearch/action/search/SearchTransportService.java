@@ -130,8 +130,16 @@ public class SearchTransportService {
         // this used to be the QUERY_AND_FETCH which doesn't exist anymore.
         final boolean fetchDocuments = request.numberOfShards() == 1;
         Writeable.Reader<SearchPhaseResult> reader = fetchDocuments ? QueryFetchSearchResult::new : QuerySearchResult::new;
-
+        /**
+         * 这个回调主要是连接处理
+         */
         final ActionListener handler = responseWrapper.apply(connection, listener);
+        /**
+         * 发送请求
+         *
+         * ConnectionCountingHandler：基于ActionListenerResponseHandler ，封装了一层，统计对同一个node的连接数
+         *ActionListenerResponseHandler : 把
+         */
         transportService.sendChildRequest(connection, QUERY_ACTION_NAME, request, task,
                 new ConnectionCountingHandler<>(handler, reader, clientConnections, connection.getNode().getId()));
     }
@@ -366,6 +374,7 @@ public class SearchTransportService {
      * @return a connection to the given node belonging to the cluster with the provided alias.
      */
     public Transport.Connection getConnection(@Nullable String clusterAlias, DiscoveryNode node) {
+        // 本集群
         if (clusterAlias == null) {
             return transportService.getConnection(node);
         } else {

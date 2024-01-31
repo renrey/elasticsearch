@@ -128,6 +128,9 @@ public class TransportService extends AbstractLifecycleComponent
 
     /** if set will call requests sent to this id to shortcut and executed locally */
     volatile DiscoveryNode localNode = null;
+    /**
+     * 当前节点连接！！！
+     */
     private final Transport.Connection localNodeConnection = new Transport.Connection() {
         @Override
         public DiscoveryNode getNode() {
@@ -779,8 +782,10 @@ public class TransportService extends AbstractLifecycleComponent
      * @throws NodeNotConnectedException if the given node is not connected
      */
     public Transport.Connection getConnection(DiscoveryNode node) {
+        // 当前节点自己
         if (isLocalNode(node)) {
             return localNodeConnection;
+       // 其他节点，要通过connectionManager获取
         } else {
             return connectionManager.getConnection(node);
         }
@@ -829,6 +834,9 @@ public class TransportService extends AbstractLifecycleComponent
         // TODO we can probably fold this entire request ID dance into connection.sendReqeust but it will be a bigger refactoring
         final long requestId = responseHandlers.add(new Transport.ResponseContext<>(responseHandler, connection, action));
         final TimeoutHandler timeoutHandler;
+        /**
+         * 超时handler
+         */
         if (options.timeout() != null) {
             timeoutHandler = new TimeoutHandler(requestId, connection.getNode(), action);
             responseHandler.setTimeoutHandler(timeoutHandler);
@@ -845,8 +853,14 @@ public class TransportService extends AbstractLifecycleComponent
             }
             if (timeoutHandler != null) {
                 assert options.timeout() != null;
+                /**
+                 * 提交超时handler，用于达到超时，进行超时处理
+                 */
                 timeoutHandler.scheduleTimeout(options.timeout());
             }
+            /**
+             * 调用sendRequest发送真正请求
+             */
             connection.sendRequest(requestId, action, request, options); // local node optimization happens upstream
         } catch (final Exception e) {
             // usually happen either because we failed to connect to the node
@@ -1191,6 +1205,7 @@ public class TransportService extends AbstractLifecycleComponent
                 if (holder != null) {
                     assert holder.action().equals(action);
                     assert holder.connection().getNode().equals(node);
+                    // 抛出超时异常
                     holder.handler().handleException(
                         new ReceiveTimeoutTransportException(holder.connection().getNode(), holder.action(),
                             "request_id [" + requestId + "] timed out after [" + (timeoutTime - sentTime) + "ms]"));
@@ -1219,6 +1234,9 @@ public class TransportService extends AbstractLifecycleComponent
         }
 
         private void scheduleTimeout(TimeValue timeout) {
+            /**
+             * 提交到GENERIC线程池，等待超时时间
+             */
             this.cancellable = threadPool.schedule(this, timeout, ThreadPool.Names.GENERIC);
         }
     }

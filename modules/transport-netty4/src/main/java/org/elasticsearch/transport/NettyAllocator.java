@@ -38,6 +38,7 @@ public class NettyAllocator {
     private static final String USE_NETTY_DEFAULT_CHUNK = "es.unsafe.use_netty_default_chunk_and_page_size";
 
     static {
+        // 默认不使用netty原生分配
         if (Booleans.parseBoolean(System.getProperty(USE_NETTY_DEFAULT), false)) {
             ALLOCATOR = ByteBufAllocator.DEFAULT;
             SUGGESTED_MAX_ALLOCATION_SIZE = 1024 * 1024;
@@ -52,7 +53,14 @@ public class NettyAllocator {
             ByteSizeValue g1gcRegionSize = new ByteSizeValue(g1gcRegionSizeInBytes);
 
             ByteBufAllocator delegate;
+            /**
+             * 判断是否使用内存池的buffer ！！！！
+             *
+             * heap<1g，不使用内存池
+             * g1时region<1m,不使用内存池
+             */
             if (useUnpooled(heapSizeInBytes, g1gcEnabled, g1gcRegionSizeIsKnown, g1gcRegionSizeInBytes)) {
+                // 默认应该是直接内存
                 delegate = UnpooledByteBufAllocator.DEFAULT;
                 if (g1gcEnabled && g1gcRegionSizeIsKnown) {
                     // Suggested max allocation size 1/4 of region size. Guard against unknown edge cases
@@ -90,6 +98,7 @@ public class NettyAllocator {
                 int smallCacheSize = PooledByteBufAllocator.defaultSmallCacheSize();
                 int normalCacheSize = PooledByteBufAllocator.defaultNormalCacheSize();
                 boolean useCacheForAllThreads = PooledByteBufAllocator.defaultUseCacheForAllThreads();
+                // 池化，不使用直接内存
                 delegate = new PooledByteBufAllocator(false, nHeapArena, 0, pageSize, maxOrder, tinyCacheSize,
                     smallCacheSize, normalCacheSize, useCacheForAllThreads);
                 int chunkSizeInBytes = pageSize << maxOrder;
@@ -101,6 +110,7 @@ public class NettyAllocator {
                     + ", g1gc_enabled=" + g1gcEnabled
                     + ", g1gc_region_size=" + g1gcRegionSize + "}]";
             }
+            // 默认对外时不使用堆内的
             ALLOCATOR = new NoDirectBuffers(delegate);
         }
     }
@@ -124,8 +134,10 @@ public class NettyAllocator {
     }
 
     public static Class<? extends Channel> getChannelType() {
+        // es原生默认
         if (ALLOCATOR instanceof NoDirectBuffers) {
             return CopyBytesSocketChannel.class;// 默认
+        // 使用netty原生
         } else {
             return Netty4NioSocketChannel.class;
         }
@@ -144,11 +156,14 @@ public class NettyAllocator {
             return true;
         } else if (userForcedPooled()) {
             return true;
+       // 堆少于1g，不使用内存池
         } else if (heapSizeInBytes <= 1 << 30) {
             // If the heap is 1GB or less we use unpooled
             return true;
+       // > 1g 未使用g1，使用内存池
         } else if (g1gcEnabled == false) {
             return false;
+       // 使用g1, region 的大小少于1M,不使用内存池
         } else {
             // If the G1GC is enabled and the region size is known and is less than 1MB we use unpooled.
             boolean g1gcRegionIsLessThan1MB = g1RegionSize < 1 << 20;
