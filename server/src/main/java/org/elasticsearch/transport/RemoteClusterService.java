@@ -187,6 +187,7 @@ public final class RemoteClusterService extends RemoteClusterAware implements Cl
 
     public Map<String, OriginalIndices> groupIndices(IndicesOptions indicesOptions, String[] indices, Predicate<String> indexExists) {
         Map<String, OriginalIndices> originalIndicesMap = new HashMap<>();
+        // 大概是ccs相關
         if (isCrossClusterSearchEnabled()) {
             final Map<String, List<String>> groupedIndices = groupClusterIndices(getRemoteClusterNames(), indices, indexExists);
             if (groupedIndices.isEmpty()) {
@@ -201,6 +202,7 @@ public final class RemoteClusterService extends RemoteClusterAware implements Cl
                 }
             }
         } else {
+            // 不開啓就只是加LOCAL_CLUSTER_GROUP_KEY
             originalIndicesMap.put(LOCAL_CLUSTER_GROUP_KEY, new OriginalIndices(indices, indicesOptions));
         }
         return originalIndicesMap;

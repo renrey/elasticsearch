@@ -77,20 +77,31 @@ public class RestCancellableNodeClient extends FilterClient {
     @Override
     public <Request extends ActionRequest, Response extends ActionResponse> void doExecute(
         ActionType<Response> action, Request request, ActionListener<Response> listener) {
+
+        // 通过下面的可知，这层主要作用就是可取消请求
+        // 可取消指定的整个http请求：
+        // 1. 保存http channel、等http连接相关
+        // 2. 生成可取消的task 标志
+
         /**
-         * 1. 为这个httpChannel，创建1个CloseListener
+         * 1. 保存当前连接的httpChannel，并创建1个CloseListener（用于后续关闭使用，就是保存一些现在有的属性，例如当前连接有什么请求）
          */
         CloseListener closeListener = httpChannels.computeIfAbsent(httpChannel, channel -> new CloseListener());
         TaskHolder taskHolder = new TaskHolder();
         /**
+         * 执行任务核心
          * 2.  执行NodeClient的executeLocally : 即把action转成TransportAction, 交给集群执行
          * 得到这次执行的task对象,为了拿到taskId
+         * @see NodeClient#executeLocally(ActionType, ActionRequest, ActionListener)
+         *
          */
         Task task = client.executeLocally(action, request,
+            // 可以看到这里的回调作用就是把当前请求的task从 （对应连接）closeListener的tasks中去除
             new ActionListener<Response>() {
                 @Override
                 public void onResponse(Response response) {
                     try {
+                        // 完成就是不保存task
                         closeListener.unregisterTask(taskHolder);
                     } finally {
                         listener.onResponse(response);
@@ -107,10 +118,10 @@ public class RestCancellableNodeClient extends FilterClient {
                 }
             });
         assert task instanceof CancellableTask : action.name() + " is not cancellable";
-        // task的唯一标识（）
+        // 生成task的唯一标识（!!!!） -> 可用来对task进行取消
         final TaskId taskId = new TaskId(client.getLocalNodeId(), task.getId());
         /**
-         * 3。 把task注册到closeListener
+         * 3。 把task注册到closeListener，方便后续调用取消
          * 作用：保存taskId
          */
         closeListener.registerTask(taskHolder, taskId);

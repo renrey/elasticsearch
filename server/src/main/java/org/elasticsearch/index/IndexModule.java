@@ -379,10 +379,12 @@ public final class IndexModule {
 
     public static Type defaultStoreType(final boolean allowMmap) {
         if (allowMmap && Constants.JRE_IS_64BIT && MMapDirectory.UNMAP_SUPPORTED) {
+            // 64位
             return Type.HYBRIDFS;
         } else if (Constants.WINDOWS) {
             return Type.SIMPLEFS;
         } else {
+            // 非win下，不使用mmap
             return Type.NIOFS;
         }
     }
@@ -417,9 +419,11 @@ public final class IndexModule {
         IndexAnalyzers indexAnalyzers = null;
         boolean success = false;
         try {
+            // 默认开启index缓存
             if (indexSettings.getValue(INDEX_QUERY_CACHE_ENABLED_SETTING)) {
                 BiFunction<IndexSettings, IndicesQueryCache, QueryCache> queryCacheProvider = forceQueryCacheProvider.get();
                 if (queryCacheProvider == null) {
+                    // 默認 -》使用indies的全局缓存
                     queryCache = new IndexQueryCache(indexSettings, indicesQueryCache);
                 } else {
                     queryCache = queryCacheProvider.apply(indexSettings, indicesQueryCache);
@@ -430,6 +434,8 @@ public final class IndexModule {
             if (IndexService.needsMapperService(indexSettings, indexCreationContext)) {
                 indexAnalyzers = analysisRegistry.build(indexSettings);
             }
+
+            // 创建
             final IndexService indexService = new IndexService(indexSettings, indexCreationContext, environment, xContentRegistry,
                 new SimilarityService(indexSettings, scriptService, similarities), shardStoreDeleter, indexAnalyzers,
                 engineFactory, circuitBreakerService, bigArrays, threadPool, scriptService, clusterService, client, queryCache,

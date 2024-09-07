@@ -12,6 +12,8 @@ import java.io.IOException;
 import java.util.function.BiConsumer;
 
 import org.apache.lucene.index.DirectoryReader;
+import org.apache.lucene.index.FilterDirectoryReader;
+import org.apache.lucene.index.StandardDirectoryReader;
 import org.apache.lucene.search.ReferenceManager;
 
 import org.apache.lucene.search.SearcherManager;
@@ -52,6 +54,11 @@ class ElasticsearchReaderManager extends ReferenceManager<ElasticsearchDirectory
 
     @Override
     protected ElasticsearchDirectoryReader refreshIfNeeded(ElasticsearchDirectoryReader referenceToRefresh) throws IOException {
+        // 使用current作为参数 -》旧的reader
+        /**
+         * @see FilterDirectoryReader#doOpenIfChanged()
+         * @see StandardDirectoryReader#doOpenIfChanged() 通过indexWriter的reader执行
+         */
         final ElasticsearchDirectoryReader reader = (ElasticsearchDirectoryReader) DirectoryReader.openIfChanged(referenceToRefresh);
         if (reader != null) {
             refreshListener.accept(reader, referenceToRefresh);

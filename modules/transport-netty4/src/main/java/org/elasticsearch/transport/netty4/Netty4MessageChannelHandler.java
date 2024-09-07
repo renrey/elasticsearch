@@ -46,10 +46,14 @@ final class Netty4MessageChannelHandler extends ChannelDuplexHandler {
         this.transport = transport;
         final ThreadPool threadPool = transport.getThreadPool();
         final Transport.RequestHandlers requestHandlers = transport.getRequestHandlers();
+
+        // 重新定义个pipeline（es实现，类似netty的）
+        // messageHandler -> transport::inboundMessage转发到handler
         this.pipeline = new InboundPipeline(transport.getVersion(), transport.getStatsTracker(), recycler, threadPool::relativeTimeInMillis,
             transport.getInflightBreaker(), requestHandlers::getHandler, transport::inboundMessage);
     }
 
+    // 读取
     @Override
     public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
         assert Transports.assertDefaultThreadContext(transport.getThreadPool().getThreadContext());
@@ -57,8 +61,12 @@ final class Netty4MessageChannelHandler extends ChannelDuplexHandler {
         assert msg instanceof ByteBuf : "Expected message type ByteBuf, found: " + msg.getClass();
 
         final ByteBuf buffer = (ByteBuf) msg;
+        // 拿回这个连接的es channel
         Netty4TcpChannel channel = ctx.channel().attr(Netty4Transport.CHANNEL_KEY).get();
+        // 对msg报装
         final BytesReference wrapped = Netty4Utils.toBytesReference(buffer);
+
+        // 提交给pipeline
         try (ReleasableBytesReference reference = new ReleasableBytesReference(wrapped, buffer::release)) {
             pipeline.handleBytes(channel, reference);
         }
@@ -78,10 +86,12 @@ final class Netty4MessageChannelHandler extends ChannelDuplexHandler {
         }
     }
 
+    // 发送，写缓冲
     @Override
     public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) {
         assert msg instanceof ByteBuf;
         assert Transports.assertDefaultThreadContext(transport.getThreadPool().getThreadContext());
+        // 新增WriteOperation（里面是字节ByteBuf），放入queuedWrites 队列
         final boolean queued = queuedWrites.offer(new WriteOperation((ByteBuf) msg, promise));
         assert queued;
         assert Transports.assertDefaultThreadContext(transport.getThreadPool().getThreadContext());
@@ -96,20 +106,23 @@ final class Netty4MessageChannelHandler extends ChannelDuplexHandler {
         ctx.fireChannelWritabilityChanged();
     }
 
+    // 实际强制发生
     @Override
     public void flush(ChannelHandlerContext ctx) {
         assert Transports.assertDefaultThreadContext(transport.getThreadPool().getThreadContext());
         Channel channel = ctx.channel();
+        // 把在当前对象的queue已缓冲的操作都发送
         if (channel.isWritable() || channel.isActive() == false) {
             doFlush(ctx);
         }
     }
 
+    // 连接关闭
     @Override
     public void channelInactive(ChannelHandlerContext ctx) throws Exception {
         assert Transports.assertDefaultThreadContext(transport.getThreadPool().getThreadContext());
-        doFlush(ctx);
-        Releasables.closeExpectNoException(pipeline);
+        doFlush(ctx);// 把已缓冲的操作都发送
+        Releasables.closeExpectNoException(pipeline);// 关闭流
         super.channelInactive(ctx);
     }
 
@@ -124,9 +137,12 @@ final class Netty4MessageChannelHandler extends ChannelDuplexHandler {
             return;
         }
         while (channel.isWritable()) {
+            // 上1个请求操作已完成，从队列取出
             if (currentWrite == null) {
                 currentWrite = queuedWrites.poll();
             }
+            // 已有则是继续这个操作 -》拆包处理
+
             if (currentWrite == null) {
                 break;
             }
@@ -140,6 +156,8 @@ final class Netty4MessageChannelHandler extends ChannelDuplexHandler {
             final int bufferSize = Math.min(readableBytes, 1 << 18);
             final int readerIndex = write.buf.readerIndex();
             final boolean sliced = readableBytes != bufferSize;
+
+            // 生成writeBuffer
             final ByteBuf writeBuffer;
             if (sliced) {
                 writeBuffer = write.buf.retainedSlice(readerIndex, bufferSize);
@@ -147,11 +165,15 @@ final class Netty4MessageChannelHandler extends ChannelDuplexHandler {
             } else {
                 writeBuffer = write.buf;
             }
+            // 触发netty 的write -》发送本次writeBuffer
             final ChannelFuture writeFuture = ctx.write(writeBuffer);
-            if (sliced == false || write.buf.readableBytes() == 0) {
-                currentWrite = null;
+            if (sliced == false || write.buf.readableBytes() == 0) {// 已经全部写完
+                currentWrite = null;// 清空
+
+                // 加1个完成回调：
                 writeFuture.addListener(future -> {
                     assert ctx.executor().inEventLoop();
+                    // 成功
                     if (future.isSuccess()) {
                         write.promise.trySuccess();
                     } else {
@@ -159,15 +181,22 @@ final class Netty4MessageChannelHandler extends ChannelDuplexHandler {
                     }
                 });
             } else {
+                // 拆包时，需要判断部分是否成功
+                // 加1个完成后，判断失败则是调用失败函数
                 writeFuture.addListener(future -> {
                     assert ctx.executor().inEventLoop();
+                    // 失败，调用失败函数
                     if (future.isSuccess() == false) {
                         write.promise.tryFailure(future.cause());
                     }
                 });
             }
+
+            // 触发写入：netty flush
             ctx.flush();
+            // 连接关闭
             if (channel.isActive() == false) {
+                // 直接调用失败
                 failQueuedWrites();
                 return;
             }

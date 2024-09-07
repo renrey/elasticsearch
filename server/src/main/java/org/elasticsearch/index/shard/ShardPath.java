@@ -109,9 +109,12 @@ public final class ShardPath {
      */
     public static ShardPath loadShardPath(Logger logger, NodeEnvironment env,
                                           ShardId shardId, String customDataPath) throws IOException {
+        // 通过本地node的数据目录（lucene）生成shard具体目录：/数据目录/nodes/id/index/shardId
+        // 默认：/数据目录/nodes/0/index/shardId
         final Path[] paths = env.availableShardPaths(shardId);
         final int nodeLockId = env.getNodeLockId();
         final Path sharedDataPath = env.sharedDataPath();
+        // 主要作用验证当前shard是否对应 node数据目录的lucene实例（通过最新的state），多实例下是找到的shard对应目录
         return loadShardPath(logger, shardId, customDataPath, paths, nodeLockId, sharedDataPath);
     }
 
@@ -126,8 +129,10 @@ public final class ShardPath {
         Path loadedPath = null;
         for (Path path : availableShardPaths) {
             // EMPTY is safe here because we never call namedObject
+            // 加载/_state/state-代.st下最新的state
             ShardStateMetadata load = ShardStateMetadata.FORMAT.loadLatestState(logger, NamedXContentRegistry.EMPTY, path);
             if (load != null) {
+                // 判断state是否当前shard
                 if (load.indexUUID.equals(indexUUID) == false && IndexMetadata.INDEX_UUID_NA_VALUE.equals(load.indexUUID) == false) {
                     logger.warn("{} found shard on path: [{}] with a different index UUID - this "
                         + "shard seems to be leftover from a different index with the same name. "
@@ -135,6 +140,7 @@ public final class ShardPath {
                     throw new IllegalStateException(shardId + " index UUID in shard state was: " + load.indexUUID
                         + " expected: " + indexUUID + " on shard path: " + path);
                 }
+                // 找到state符合的-》当前shard是这个数据目录的lucene实例
                 if (loadedPath == null) {
                     loadedPath = path;
                 } else{

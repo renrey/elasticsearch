@@ -11,11 +11,11 @@ package org.elasticsearch.index.shard;
 
 public enum IndexShardState {
     CREATED((byte) 0),
-    RECOVERING((byte) 1),
-    POST_RECOVERY((byte) 2),
-    STARTED((byte) 3),
+    RECOVERING((byte) 1),// 恢复
+    POST_RECOVERY((byte) 2),// 完成恢复
+    STARTED((byte) 3),// 已启动可用
     // previously, 4 was the RELOCATED state
-    CLOSED((byte) 5);
+    CLOSED((byte) 5);// 关闭
 
     private static final IndexShardState[] IDS = new IndexShardState[IndexShardState.values().length + 1]; // +1 for RELOCATED state
 

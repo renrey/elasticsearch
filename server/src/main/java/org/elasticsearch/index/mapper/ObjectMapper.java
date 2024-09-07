@@ -372,8 +372,9 @@ public class ObjectMapper extends Mapper implements Cloneable {
         } else {
             this.mappers = CopyOnWriteHashMap.copyOf(mappers);
         }
-        this.nestedTypePathAsString = "__" + fullPath;
+        this.nestedTypePathAsString = "__" + fullPath;// __全路径
         this.nestedTypePathAsBytes = new BytesRef(nestedTypePathAsString);
+        // term查询：属性_type、值__全路径
         this.nestedTypeFilter = new TermQuery(new Term(TypeFieldMapper.NAME, nestedTypePathAsBytes));
     }
 

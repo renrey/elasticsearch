@@ -65,6 +65,7 @@ public class SameShardAllocationDecider extends AllocationDecider {
 
     @Override
     public Decision canAllocate(ShardRouting shardRouting, RoutingNode node, RoutingAllocation allocation) {
+        // 从已分配shard中，获取这个shard组的shard
         Iterable<ShardRouting> assignedShards = allocation.routingNodes().assignedShards(shardRouting.shardId());
         Decision decision = decideSameNode(shardRouting, node, allocation, assignedShards);
         if (decision.type() == Decision.Type.NO || sameHost == false) {
@@ -127,11 +128,14 @@ public class SameShardAllocationDecider extends AllocationDecider {
     private Decision decideSameNode(ShardRouting shardRouting, RoutingNode node, RoutingAllocation allocation,
                                     Iterable<ShardRouting> assignedShards) {
         boolean debug = allocation.debugDecision();
+        // 遍历当前shard组下的shard实例
         for (ShardRouting assignedShard : assignedShards) {
+            // 判断是否已知目标node的
             if (node.nodeId().equals(assignedShard.currentNodeId())) {
                 return debug ? debugNo(shardRouting, assignedShard) : Decision.NO;
             }
         }
+        // 到这里，代表没发现当前node有这个
         return YES_NO_COPY;
     }
 

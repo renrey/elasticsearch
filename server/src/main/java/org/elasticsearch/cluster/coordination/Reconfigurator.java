@@ -49,6 +49,7 @@ public class Reconfigurator {
     private volatile boolean autoShrinkVotingConfiguration;
 
     public Reconfigurator(Settings settings, ClusterSettings clusterSettings) {
+        // 是否自动扩大投票集合
         autoShrinkVotingConfiguration = CLUSTER_AUTO_SHRINK_VOTING_CONFIGURATION.get(settings);
         clusterSettings.addSettingsUpdateConsumer(CLUSTER_AUTO_SHRINK_VOTING_CONFIGURATION, this::setAutoShrinkVotingConfiguration);
     }
@@ -86,16 +87,20 @@ public class Reconfigurator {
         logger.trace("{} reconfiguring {} based on liveNodes={}, retiredNodeIds={}, currentMaster={}",
             this, currentConfig, liveNodes, retiredNodeIds, currentMaster);
 
+        // 认为是可用的master节点
         final Set<String> liveNodeIds = liveNodes.stream()
             .filter(DiscoveryNode::isMasterNode).map(DiscoveryNode::getId).collect(Collectors.toSet());
+        // 目前的投票节点集合
         final Set<String> currentConfigNodeIds = currentConfig.getNodeIds();
 
         final Set<VotingConfigNode> orderedCandidateNodes = new TreeSet<>();
+        // 目前认为可作为投票节点（对当前节点发送join的master节点），加入orderedCandidateNodes
         liveNodes.stream()
             .filter(DiscoveryNode::isMasterNode)
-            .filter(n -> retiredNodeIds.contains(n.getId()) == false)
+            .filter(n -> retiredNodeIds.contains(n.getId()) == false)// 万一被exclude了
             .forEach(n -> orderedCandidateNodes.add(new VotingConfigNode(n.getId(), true,
                 n.getId().equals(currentMaster.getId()), currentConfigNodeIds.contains(n.getId()))));
+        // 也保留那些没被主动无效的，master node-》但是没join到这里
         currentConfigNodeIds.stream()
             .filter(nid -> liveNodeIds.contains(nid) == false)
             .filter(nid -> retiredNodeIds.contains(nid) == false)
@@ -104,21 +109,32 @@ public class Reconfigurator {
         /*
          * Now we work out how many nodes should be in the configuration:
          */
+        // 原有本次不删除的master 节点数
         final int nonRetiredConfigSize = Math.toIntExact(orderedCandidateNodes.stream().filter(n -> n.inCurrentConfig).count());
+        // 自动扩容的话（包证可用）——》就是强行指定1or3
         final int minimumConfigEnforcedSize = autoShrinkVotingConfiguration ? (nonRetiredConfigSize < 3 ? 1 : 3) : nonRetiredConfigSize;
+        // join到本地的数量
         final int nonRetiredLiveNodeCount = Math.toIntExact(orderedCandidateNodes.stream().filter(n -> n.live).count());
+
+        // 取最大-- join到本地的数量 | （默认autoShrinkVotingConfiguration） 1|3    | 关闭--原有节点数，所以偏向是新增节点才会变化
+        // 默认autoShrinkVotingConfiguration：一般跟着join数量动态变化，1、3用来兜底的
+        // 关闭：只使用出现过的最大数量-》无法缩容
         final int targetSize = Math.max(roundDownToOdd(nonRetiredLiveNodeCount), minimumConfigEnforcedSize);
 
+        // 按顺序的，如果需要截取优先删掉没join的
         final VotingConfiguration newConfig = new VotingConfiguration(
             orderedCandidateNodes.stream()
-                .limit(targetSize)
+                .limit(targetSize)// 动态数量
                 .map(n -> n.id)
                 .collect(Collectors.toSet()));
 
+        // 验证 新集合在当前 join节点下是否可用
         // new configuration should have a quorum
-        if (newConfig.hasQuorum(liveNodeIds)) {
+        if (newConfig.hasQuorum(liveNodeIds)) {// 可用的话，targetSize=nonRetiredLiveNodeCount肯定没问题，
             return newConfig;
         } else {
+            // 不可用：
+            // 1. 关闭autoShrinkVotingConfiguration，当前join没达到 原有节点数
             // If there are not enough live nodes to form a quorum in the newly-proposed configuration, it's better to do nothing.
             return currentConfig;
         }

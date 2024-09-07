@@ -114,6 +114,7 @@ public class EnableAllocationDecider extends AllocationDecider {
         final IndexMetadata indexMetadata = allocation.metadata().getIndexSafe(shardRouting.index());
         final Allocation enable;
         final boolean usedIndexSetting;
+        // index配置项index.routing.allocation.enable
         if (INDEX_ROUTING_ALLOCATION_ENABLE_SETTING.exists(indexMetadata.getSettings())) {
             enable = INDEX_ROUTING_ALLOCATION_ENABLE_SETTING.get(indexMetadata.getSettings());
             usedIndexSetting = true;
@@ -121,12 +122,14 @@ public class EnableAllocationDecider extends AllocationDecider {
             enable = this.enableAllocation;
             usedIndexSetting = false;
         }
+        // index.routing.allocation.enable的值
         switch (enable) {
-            case ALL:
+            case ALL:// 可正常使用的
                 return allocation.decision(Decision.YES, NAME, "all allocations are allowed");
-            case NONE:
+            case NONE:// 所有shard不支持分配-》大概就是虚的，暂时不使用的？
                 return allocation.decision(Decision.NO, NAME, "no allocations are allowed due to %s", setting(enable, usedIndexSetting));
             case NEW_PRIMARIES:
+                // 就是本次必须是主分片的分配
                 if (shardRouting.primary() && shardRouting.active() == false &&
                     shardRouting.recoverySource().getType() != RecoverySource.Type.EXISTING_STORE) {
                     return allocation.decision(Decision.YES, NAME, "new primary allocations are allowed");

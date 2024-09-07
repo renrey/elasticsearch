@@ -13,6 +13,7 @@ import org.apache.logging.log4j.Logger;
 import org.apache.logging.log4j.message.ParameterizedMessage;
 import org.elasticsearch.common.lucene.index.ElasticsearchDirectoryReader;
 import org.elasticsearch.common.unit.TimeValue;
+import org.elasticsearch.index.cache.bitset.BitsetFilterCache;
 import org.elasticsearch.index.fielddata.IndexFieldData;
 import org.elasticsearch.index.fielddata.IndexFieldDataService;
 import org.elasticsearch.index.mapper.MappedFieldType;
@@ -59,6 +60,10 @@ public final class IndexWarmer {
         shard.warmerService().onPreWarm();
         long time = System.nanoTime();
         final List<TerminationHandle> terminationHandles = new ArrayList<>();
+        // 实际就是执行listeners
+        /**
+         * @see BitsetFilterCache.BitSetProducerWarmer#warmReader(IndexShard, ElasticsearchDirectoryReader)
+         */
         // get a handle on pending tasks
         for (final Listener listener : listeners) {
             terminationHandles.add(listener.warmReader(shard, reader));

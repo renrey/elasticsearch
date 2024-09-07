@@ -168,19 +168,34 @@ public class Netty4HttpServerTransport extends AbstractHttpServerTransport {
     protected void doStart() {
         boolean success = false;
         try {
+            // group
+            // 三层： SharedGroup->RefCountedGroup->NioEventLoopGroup
             sharedGroup = sharedGroupFactory.getHttpGroup();
+            // 原生netty服务器启动类
             serverBootstrap = new ServerBootstrap();
-
-            serverBootstrap.group(sharedGroup.getLowLevelGroup());
+            // 下面都是原生netty的（定义类）api调用
+            // 这个调了上面的group的底层NioEventLoopGroup
+            serverBootstrap.group(sharedGroup.getLowLevelGroup());// 即主从都用同一个group
+            // 主监听端口：单个线程，即这个线程负载高？
+            // 连接处理的线程：当前线程池全都共用
 
             // NettyAllocator will return the channel type designed to work with the configuredAllocator
+            /**
+             * es重新定义了CopyBytesServerSocketChannel
+             * 作用：取代原有的netty内存池（1024b），提供更大的空间（默认1M），且可修改
+             */
             serverBootstrap.channel(NettyAllocator.getServerChannelType());
 
             // Set the allocators for both the server channel and the child channels created
             serverBootstrap.option(ChannelOption.ALLOCATOR, NettyAllocator.getAllocator());
             serverBootstrap.childOption(ChannelOption.ALLOCATOR, NettyAllocator.getAllocator());
 
+            // 连接socket channel的handler pipeline初始化
+            /**
+             * @see HttpChannelHandler
+             */
             serverBootstrap.childHandler(configureServerChannelHandler());
+            // 异常打印的处理
             serverBootstrap.handler(new ServerChannelExceptionHandler(this));
 
             serverBootstrap.childOption(ChannelOption.TCP_NODELAY, SETTING_HTTP_TCP_NO_DELAY.get(settings));
@@ -290,28 +305,48 @@ public class Netty4HttpServerTransport extends AbstractHttpServerTransport {
 
         @Override
         protected void initChannel(Channel ch) throws Exception {
+            // es channel
             Netty4HttpChannel nettyHttpChannel = new Netty4HttpChannel(ch);
             ch.attr(HTTP_CHANNEL_KEY).set(nettyHttpChannel);
-            ch.pipeline().addLast("byte_buf_sizer", byteBufSizer);
-            ch.pipeline().addLast("read_timeout", new ReadTimeoutHandler(transport.readTimeoutMillis, TimeUnit.MILLISECONDS));
+
+
+            ch.pipeline().addLast("byte_buf_sizer", byteBufSizer);// 解析
+            ch.pipeline().addLast("read_timeout", new ReadTimeoutHandler(transport.readTimeoutMillis, TimeUnit.MILLISECONDS));// 超时
+
+            // 直接使用netty提供http序列化、反序列化
             final HttpRequestDecoder decoder = new HttpRequestDecoder(
                 handlingSettings.getMaxInitialLineLength(),
                 handlingSettings.getMaxHeaderSize(),
                 handlingSettings.getMaxChunkSize());
             decoder.setCumulator(ByteToMessageDecoder.COMPOSITE_CUMULATOR);
+            // 解析本次的io事件-》请求decode、响应encode
             ch.pipeline().addLast("decoder", decoder);
-            ch.pipeline().addLast("decoder_compress", new HttpContentDecompressor());
+            ch.pipeline().addLast("decoder_compress", new HttpContentDecompressor());//压缩
             ch.pipeline().addLast("encoder", new HttpResponseEncoder());
+
+            // 就是把io事件请求处理成真正的请求（粘包问题）
+            // 基于netty原生的聚合，就是聚合一堆请求成一个，其实解决粘包问题
             final HttpObjectAggregator aggregator = new HttpObjectAggregator(handlingSettings.getMaxContentLength());
             aggregator.setMaxCumulationBufferComponents(transport.maxCompositeBufferComponents);
+
+            // 负责把http decoder的整合（粘包）成1个request对象
             ch.pipeline().addLast("aggregator", aggregator);
             if (handlingSettings.isCompression()) {
                 ch.pipeline().addLast("encoder_compress", new HttpContentCompressor(handlingSettings.getCompressionLevel()));
             }
+
+            // Netty4HttpReXXX 与 netty的http对象 转换
             ch.pipeline().addLast("request_creator", requestCreator);
             ch.pipeline().addLast("response_creator", responseCreator);
+
+            // pipeline功能？
             ch.pipeline().addLast("pipelining", new Netty4HttpPipeliningHandler(logger, transport.pipeliningMaxEvents));
+
+            // 上面的都是从io中解析成http请求对象
+
+            // 最后才是请求转发处理Netty4HttpXXX，开始基于http解析的结果出来一个完整http请求
             ch.pipeline().addLast("handler", requestHandler);
+
             transport.serverAcceptedChannel(nettyHttpChannel);
         }
 

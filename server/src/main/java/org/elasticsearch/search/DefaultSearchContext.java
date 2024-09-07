@@ -24,6 +24,7 @@ import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.index.IndexService;
 import org.elasticsearch.index.IndexSettings;
 import org.elasticsearch.index.cache.bitset.BitsetFilterCache;
+import org.elasticsearch.index.cache.query.IndexQueryCache;
 import org.elasticsearch.index.engine.Engine;
 import org.elasticsearch.index.mapper.TypeFieldMapper;
 import org.elasticsearch.index.query.AbstractQueryBuilder;
@@ -152,6 +153,10 @@ final class DefaultSearchContext extends SearchContext {
         this.indexShard = readerContext.indexShard();
 
         Engine.Searcher engineSearcher = readerContext.acquireSearcher("search");
+        /**
+         * 基于engineSearch拿到IndexReader
+         * @see IndexQueryCache
+         */
         this.searcher = new ContextIndexSearcher(engineSearcher.getIndexReader(), engineSearcher.getSimilarity(),
             engineSearcher.getQueryCache(), engineSearcher.getQueryCachingPolicy(), lowLevelCancellation);
         releasables.addAll(org.elasticsearch.common.collect.List.of(engineSearcher, searcher));

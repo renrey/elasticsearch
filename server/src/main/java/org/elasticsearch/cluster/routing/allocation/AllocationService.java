@@ -259,8 +259,10 @@ public class AllocationService {
      * Returns an updated cluster state if changes were necessary, or the identical cluster if no changes were required.
      */
     public ClusterState adaptAutoExpandReplicas(ClusterState clusterState) {
+        // 等于创建一次操作对象
         RoutingAllocation allocation = new RoutingAllocation(allocationDeciders, clusterState.getRoutingNodes(), clusterState,
             clusterInfoService.getClusterInfo(), snapshotsInfoService.snapshotShardSizes(), currentNanoTime());
+        // 自动扩容副本 ，clusterState.metadata()实际就是当前集群所有index
         final Map<Integer, List<String>> autoExpandReplicaChanges =
             AutoExpandReplicas.getAutoExpandReplicaChanges(clusterState.metadata(), allocation);
         if (autoExpandReplicaChanges.isEmpty()) {
@@ -374,18 +376,24 @@ public class AllocationService {
     }
 
     /**
+     * 基于存活的node （live nodes）对路由表（routing table） 进行重路由（reroute）
      * Reroutes the routing table based on the live nodes.
      * <p>
      * If the same instance of ClusterState is returned, then no change has been made.
      */
     public ClusterState reroute(ClusterState clusterState, String reason) {
+        // 大概获取集群现有状态
         ClusterState fixedClusterState = adaptAutoExpandReplicas(clusterState);
 
+        // 生成当前集群下，具体shard实例的情况（在哪个节点、有哪些具体shard未分配）
         RoutingNodes routingNodes = getMutableRoutingNodes(fixedClusterState);
         // shuffle the unassigned shards, just so we won't have things like poison failed shards
-        routingNodes.unassigned().shuffle();
+        routingNodes.unassigned().shuffle();// 打乱未分配的shard顺序
+
+        // 这里就是代表新的分配对象
         RoutingAllocation allocation = new RoutingAllocation(allocationDeciders, routingNodes, fixedClusterState,
             clusterInfoService.getClusterInfo(), snapshotsInfoService.snapshotShardSizes(), currentNanoTime());
+        // 执行reroute -》重新生成分配
         reroute(allocation);
         if (fixedClusterState == clusterState && allocation.routingNodesChanged() == false) {
             return clusterState;
@@ -418,30 +426,40 @@ public class AllocationService {
 
         removeDelayMarkers(allocation);
 
+        // 基于之前已有分配（即有allocation id的）进行未分配的shard分配
         allocateExistingUnassignedShards(allocation);  // try to allocate existing shard copies first
         shardsAllocator.allocate(allocation);
         assert RoutingNodes.assertShardStats(allocation.routingNodes());
     }
 
     private void allocateExistingUnassignedShards(RoutingAllocation allocation) {
+        // 排序未分配shard
         allocation.routingNodes().unassigned().sort(PriorityComparator.getAllocationComparator(allocation)); // sort for priority ordering
 
+        // 其实就是es本身扩展点，在进行分配前执行
         for (final ExistingShardsAllocator existingShardsAllocator : existingShardsAllocators.values()) {
             existingShardsAllocator.beforeAllocation(allocation);
         }
 
+        // 应该就是分配未 分配的 primary shard
+
+        // 遍历未分配的shard
         final RoutingNodes.UnassignedShards.UnassignedIterator primaryIterator = allocation.routingNodes().unassigned().iterator();
         while (primaryIterator.hasNext()) {
             final ShardRouting shardRouting = primaryIterator.next();
+            // 先进行primary的
             if (shardRouting.primary()) {
+                // 使用ShardsAllocator进行这个未分配的 primary shard
                 getAllocatorForShard(shardRouting, allocation).allocateUnassigned(shardRouting, allocation, primaryIterator);
             }
         }
 
+        // 扩展点：afterPrimariesBeforeReplicas -》生成主，但是副本前？
         for (final ExistingShardsAllocator existingShardsAllocator : existingShardsAllocators.values()) {
             existingShardsAllocator.afterPrimariesBeforeReplicas(allocation);
         }
 
+        // 进行副本shard的分配
         final RoutingNodes.UnassignedShards.UnassignedIterator replicaIterator = allocation.routingNodes().unassigned().iterator();
         while (replicaIterator.hasNext()) {
             final ShardRouting shardRouting = replicaIterator.next();

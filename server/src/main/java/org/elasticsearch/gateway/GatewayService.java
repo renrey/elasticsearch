@@ -60,10 +60,13 @@ public class GatewayService extends AbstractLifecycleComponent implements Cluste
 
     static final TimeValue DEFAULT_RECOVER_AFTER_TIME_IF_EXPECTED_NODES_IS_SET = TimeValue.timeValueMinutes(5);
 
+    // 线程池
     private final ThreadPool threadPool;
 
+    // 分配
     private final AllocationService allocationService;
 
+    // 集群
     private final ClusterService clusterService;
 
     private final TimeValue recoverAfterTime;
@@ -122,7 +125,8 @@ public class GatewayService extends AbstractLifecycleComponent implements Cluste
 
     @Override
     protected void doStart() {
-        // 具有master角色，把GatewayService添加到listener
+        // 具有master角色，把GatewayService添加到clusterService的listener
+        //  -》 集群变化就调用这里
         if (DiscoveryNode.isMasterNode(clusterService.getSettings())) {
             // use post applied so that the state will be visible to the background recovery thread we spawn in performStateRecovery
             clusterService.addListener(this);
@@ -156,6 +160,7 @@ public class GatewayService extends AbstractLifecycleComponent implements Cluste
         }
 
         final DiscoveryNodes nodes = state.nodes();
+        // 下面都是打印信息
         if (state.nodes().getMasterNodeId() == null) {
             logger.debug("not recovering from gateway, no master elected yet");
         } else if (recoverAfterNodes != -1 && (nodes.getMasterAndDataNodes().size()) < recoverAfterNodes) {
@@ -190,6 +195,7 @@ public class GatewayService extends AbstractLifecycleComponent implements Cluste
                     reason = "expecting [" + expectedMasterNodes + "] master nodes, but only have [" + nodes.getMasterNodes().size() + "]";
                 }
             }
+            // 执行
             performStateRecovery(enforceRecoverAfterTime, reason);
         }
     }

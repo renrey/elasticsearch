@@ -249,8 +249,10 @@ public class ShardSearchRequest extends TransportRequest implements IndicesReque
     }
 
     protected final void innerWriteTo(StreamOutput out, boolean asKey) throws IOException {
+        // 核心：shardid
         shardId.writeTo(out);
         out.writeByte(searchType.id());
+        // 不作为key
         if (asKey == false) {
             if (out.getVersion().onOrAfter(Version.V_7_11_0)) {
                 out.writeVInt(shardRequestIndex);

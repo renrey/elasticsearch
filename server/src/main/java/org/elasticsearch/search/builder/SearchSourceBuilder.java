@@ -1012,7 +1012,7 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
      * Returns the point in time that is configured with this query
      */
     public PointInTimeBuilder pointInTimeBuilder() {
-        return pointInTimeBuilder;
+        return pointInTimeBuilder;// pit属性
     }
 
     /**

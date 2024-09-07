@@ -78,8 +78,8 @@ public class InboundHandler {
         channel.getChannelStats().markAccessed(startTime);
         TransportLogger.logInboundMessage(channel, message);
 
-        if (message.isPing()) {
-            keepAlive.receiveKeepAlive(channel);
+        if (message.isPing()) {// ping消息
+            keepAlive.receiveKeepAlive(channel);// 给这个节点发送ping
         } else {
             messageReceived(channel, message, startTime);
         }
@@ -99,6 +99,7 @@ public class InboundHandler {
             threadContext.setHeaders(header.getHeaders());
             threadContext.putTransient("_remote_address", remoteAddress);
             if (header.isRequest()) {
+                // 处理请求
                 handleRequest(channel, header, message);
             } else {
                 // Responses do not support short circuiting currently
@@ -185,8 +186,11 @@ public class InboundHandler {
                 } else {
                     final StreamInput stream = namedWriteableStream(message.openOrGetStreamInput());
                     assertRemoteVersion(stream, header.getVersion());
+
+                    // 获取这个action ！！！
                     final RequestHandlerRegistry<T> reg = requestHandlers.getHandler(action);
                     assert reg != null;
+                    // 解析流成 request对象
                     final T request = reg.newRequest(stream);
                     try {
                         request.remoteAddress(new TransportAddress(channel.getRemoteAddress()));
@@ -198,8 +202,10 @@ public class InboundHandler {
                                 + action + "], available [" + stream.available() + "]; resetting");
                         }
                         final String executor = reg.getExecutor();
+                        // 使用same，则是当前网络线程，执行
                         if (ThreadPool.Names.SAME.equals(executor)) {
                             try {
+                                //直接执行
                                 reg.processMessageReceived(request, transportChannel);
                             } catch (Exception e) {
                                 sendErrorResponse(reg.getAction(), transportChannel, e);
@@ -210,9 +216,11 @@ public class InboundHandler {
                                 ((RefCounted) request).incRef();
                             }
                             try {
+                                // 交给目标线程池执行
                                 threadPool.executor(executor).execute(new AbstractRunnable() {
                                     @Override
                                     protected void doRun() throws Exception {
+                                        // 在线程池中运行
                                         reg.processMessageReceived(request, transportChannel);
                                     }
 

@@ -10,8 +10,7 @@ package org.elasticsearch.search.fetch;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-import org.apache.lucene.index.LeafReaderContext;
-import org.apache.lucene.index.ReaderUtil;
+import org.apache.lucene.index.*;
 import org.apache.lucene.search.TotalHits;
 import org.elasticsearch.common.CheckedBiConsumer;
 import org.elasticsearch.common.Nullable;
@@ -91,14 +90,19 @@ public class FetchPhase {
         for (int index = 0; index < context.docIdsToLoadSize(); index++) {
             docs[index] = new DocIdToIndex(context.docIdsToLoad()[index], index);
         }
+
+        // 先排序-》下面通过docid二分查找
         // make sure that we iterate in doc id order
         Arrays.sort(docs);
 
+        // key=字段类型，v=字段名集合
         Map<String, Set<String>> storedToRequestedFields = new HashMap<>();
+        // 验证是否存在指定字段，并设置storedToRequestedFields，返回CustomFieldsVisitor
         FieldsVisitor fieldsVisitor = createStoredFieldsVisitor(context, storedToRequestedFields);
 
         FetchContext fetchContext = new FetchContext(context);
 
+        // 应该存放结果集合
         SearchHit[] hits = new SearchHit[context.docIdsToLoadSize()];
 
         List<FetchSubPhaseProcessor> processors = getProcessors(context.shardTarget(), fetchContext);
@@ -109,16 +113,20 @@ public class FetchPhase {
         LeafNestedDocuments leafNestedDocuments = null;
         CheckedBiConsumer<Integer, FieldsVisitor, IOException> fieldReader = null;
         boolean hasSequentialDocs = hasSequentialDocs(docs);
+        // 遍历docid
         for (int index = 0; index < context.docIdsToLoadSize(); index++) {
             if (context.isCancelled()) {
                 throw new TaskCancelledException("cancelled");
             }
+            // 指定docid
             int docId = docs[index].docId;
             try {
+                // 通过docid （二分查找比较每个segment的base值，找小于当前的最大doc）找到 对应leave（segment）
                 int readerIndex = ReaderUtil.subIndex(docId, context.searcher().getIndexReader().leaves());
                 if (currentReaderIndex != readerIndex) {
                     currentReaderContext = context.searcher().getIndexReader().leaves().get(readerIndex);
                     currentReaderIndex = readerIndex;
+                    // 下面就是从segment取出 doc的函数
                     if (currentReaderContext.reader() instanceof SequentialStoredFieldsLeafReader
                             && hasSequentialDocs && docs.length >= 10) {
                         // All the docs to fetch are adjacent but Lucene stored fields are optimized
@@ -128,14 +136,21 @@ public class FetchPhase {
                         SequentialStoredFieldsLeafReader lf = (SequentialStoredFieldsLeafReader) currentReaderContext.reader();
                         fieldReader = lf.getSequentialStoredFieldsReader()::visitDocument;
                     } else {
-                        fieldReader = currentReaderContext.reader()::document;
+                        // SingleDocDirectoryReader?
+                        // SegmentReader
+                        // org.apache.lucene.index.CodecReader.document
+
+                        // .fld文件存了每个docId（就是全局顺序下标）在对应segment的文件的开始位置
+                        fieldReader = currentReaderContext.reader()::document;// 文档reader
                     }
                     for (FetchSubPhaseProcessor processor : processors) {
                         processor.setNextReader(currentReaderContext);
                     }
+                    // 内置类型
                     leafNestedDocuments = nestedDocuments.getLeafNestedDocuments(currentReaderContext);
                 }
                 assert currentReaderContext != null;
+                // 就是把数据（通过reader、fieldsVisitor）加载，并返回HitContext-》当前目标docId的数据序列化
                 HitContext hit = prepareHitContext(
                     context,
                     leafNestedDocuments,
@@ -148,7 +163,8 @@ public class FetchPhase {
                 for (FetchSubPhaseProcessor processor : processors) {
                     processor.process(hit);
                 }
-                hits[docs[index].index] = hit.hit();
+                // 放入结果 -》
+                hits[docs[index].index] = hit.hit();// 直接SearchHit
             } catch (Exception e) {
                 throw new FetchPhaseExecutionException(context.shardTarget(), "Error running fetch phase for doc [" + docId + "]", e);
             }
@@ -157,7 +173,9 @@ public class FetchPhase {
             throw new TaskCancelledException("cancelled");
         }
 
+        // 还是用TotalHits存结果
         TotalHits totalHits = context.queryResult().getTotalHits();
+        // 加入到fetchResult
         context.fetchResult().hits(new SearchHits(hits, totalHits, context.queryResult().getMaxScore()));
 
     }
@@ -206,7 +224,9 @@ public class FetchPhase {
             // disable stored fields entirely
             return null;
         } else {
+            // 遍历入参中字段名的范式
             for (String fieldNameOrPattern : context.storedFieldsContext().fieldNames()) {
+                // _source ：应该是全部字段？
                 if (fieldNameOrPattern.equals(SourceFieldMapper.NAME)) {
                     FetchSourceContext fetchSourceContext = context.hasFetchSourceContext() ? context.fetchSourceContext()
                         : FetchSourceContext.FETCH_SOURCE;
@@ -215,26 +235,33 @@ public class FetchPhase {
                 }
                 SearchExecutionContext searchExecutionContext = context.getSearchExecutionContext();
                 Collection<String> fieldNames = searchExecutionContext.simpleMatchToIndexNames(fieldNameOrPattern);
+                // 遍历需要的字段名
                 for (String fieldName : fieldNames) {
+                    // 查找mapping中是否存在这个字段
                     MappedFieldType fieldType = searchExecutionContext.getFieldType(fieldName);
-                    if (fieldType == null) {
+                    if (fieldType == null) {// 不存在，异常
                         // Only fail if we know it is a object field, missing paths / fields shouldn't fail.
                         if (searchExecutionContext.getObjectMapper(fieldName) != null) {
                             throw new IllegalArgumentException("field [" + fieldName + "] isn't a leaf field");
                         }
                     } else {
+                        // 存在字段
+                        // 字段类型名
                         String storedField = fieldType.name();
+                        // storedToRequestedFields中，放入key=字段类型，v=set
                         Set<String> requestedFields = storedToRequestedFields.computeIfAbsent(
                             storedField, key -> new HashSet<>());
-                        requestedFields.add(fieldName);
+                        requestedFields.add(fieldName);// 当前类型set中放入当前字段名
                     }
                 }
             }
             boolean loadSource = sourceRequired(context);
             if (storedToRequestedFields.isEmpty()) {
+                // 大概就是无传入_source字段，啥都不返回
                 // empty list specified, default to disable _source if no explicit indication
                 return new FieldsVisitor(loadSource);
             } else {
+                // 返回
                 return new CustomFieldsVisitor(storedToRequestedFields.keySet(), loadSource);
             }
         }
@@ -252,6 +279,7 @@ public class FetchPhase {
                                          Map<String, Set<String>> storedToRequestedFields,
                                          LeafReaderContext subReaderContext,
                                          CheckedBiConsumer<Integer, FieldsVisitor, IOException> storedFieldReader) throws IOException {
+        // doc中无嵌套类型
         if (nestedDocuments.advance(docId - subReaderContext.docBase) == null) {
             return prepareNonNestedHitContext(
                 context, fieldsVisitor, docId, storedToRequestedFields, subReaderContext, storedFieldReader);
@@ -276,18 +304,29 @@ public class FetchPhase {
                                                   CheckedBiConsumer<Integer, FieldsVisitor, IOException> fieldReader) throws IOException {
         int subDocId = docId - subReaderContext.docBase;
         SearchExecutionContext searchExecutionContext = context.getSearchExecutionContext();
+        // 即无需返回字段
         if (fieldsVisitor == null) {
+            // 全是空的
             SearchHit hit = new SearchHit(docId, null, new Text(searchExecutionContext.getType()), null, null);
             return new HitContext(hit, subReaderContext, subDocId);
         } else {
             SearchHit hit;
+            // 通过reader加载数据到visitor
+            /**
+             * @see CodecReader#document(int, StoredFieldVisitor)
+             * @see org.apache.lucene.codecs.simpletext.SimpleTextStoredFieldsReader#visitDocument(int, StoredFieldVisitor)
+             */
             loadStoredFields(context.getSearchExecutionContext()::getFieldType, searchExecutionContext.getType(), fieldReader,
                 fieldsVisitor, subDocId);
+
+            // 字段_id
             Uid uid = fieldsVisitor.uid();
             if (fieldsVisitor.fields().isEmpty() == false) {
                 Map<String, DocumentField> docFields = new HashMap<>();
                 Map<String, DocumentField> metaFields = new HashMap<>();
+                // 填充字段值
                 fillDocAndMetaFields(context, fieldsVisitor, storedToRequestedFields, docFields, metaFields);
+                // hit中 包含 全局doc id（用来查找segment、在segment中查找数据）、业务id（_id字段）、docFields（字段值）
                 hit = new SearchHit(docId, uid.id(), new Text(searchExecutionContext.getType()), docFields, metaFields);
             } else {
                 hit = new SearchHit(docId, uid.id(), new Text(searchExecutionContext.getType()), emptyMap(), emptyMap());
@@ -431,11 +470,13 @@ public class FetchPhase {
         for (Map.Entry<String, List<Object>> entry : fieldsVisitor.fields().entrySet()) {
             String storedField = entry.getKey();
             List<Object> storedValues = entry.getValue();
+            // 需要判断，是否包含这个类型的这个字段 （类型、名字限定，不然同名不同类型不可以返回结果）
             if (storedToRequestedFields.containsKey(storedField)) {
                 for (String requestedField : storedToRequestedFields.get(storedField)) {
                     if (context.getSearchExecutionContext().isMetadataField(requestedField)) {
                         metaFields.put(requestedField, new DocumentField(requestedField, storedValues));
                     } else {
+                        // 放入字段名，DocumentField
                         docFields.put(requestedField, new DocumentField(requestedField, storedValues));
                     }
                 }

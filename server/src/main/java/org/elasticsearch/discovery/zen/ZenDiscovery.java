@@ -485,20 +485,26 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
                 // 集群加入成功（目标主节点就是集群当前主节点）
                 if (success) {
                     DiscoveryNode currentMasterNode = this.clusterState().getNodes().getMasterNode();
+                    // 此时应该已经发布过来，下面2种就没收到对应的publish：
+                    // 1. 真没收publish
+                    // 2. 对应join失败？
+
                     if (currentMasterNode == null) {
                         // Post 1.3.0, the master should publish a new cluster state before acking our join request. we now should have
                         // a valid master.
                         logger.debug("no master node is set, despite of join request completing. retrying pings.");
+                        // 重新提交
                         joinThreadControl.markThreadAsDoneAndStartNew(currentThread);
                         /**
                          * 当前节点的内存记录的状态的主节点 != 这次join请求的主节点
                          */
                     } else if (currentMasterNode.equals(masterNode) == false) {
+                        // 当前本地leader不是本地join的（可能没收到发布），rejoin
                         // update cluster state
-                        // 进行rejoin
+                        // 进行rejoin（就是重新执行选举等操作）
                         joinThreadControl.stopRunningThreadAndRejoin("master_switched_while_finalizing_join");
                     }
-                    // 正常
+                    // 正常 -》 已完成
                     joinThreadControl.markThreadAsDone(currentThread);
                 } else {
                     /**
@@ -884,7 +890,7 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
 
         // nodes discovered during pinging
         /**
-         * 3. 汇总当前获取所有的master节点到masterCandidates(角色为master的节点)
+         * 3. 汇总当前获取所有的master角色节点到masterCandidates(角色为master的节点)
          */
         List<ElectMasterService.MasterCandidate> masterCandidates = new ArrayList<>();
         for (ZenPing.PingResponse pingResponse : pingResponses) {
@@ -893,7 +899,7 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
             }
         }
 
-        // 当前集群没有主节点，需要选举
+        // 当前集群没有主节点，需要选举 -》 未知master
         if (activeMasters.isEmpty()) {
             // 如果开启最小master节点数量限制，就进行判断
             if (electMaster.hasEnoughCandidates(masterCandidates)) {
@@ -918,7 +924,7 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
                 "local node should never be elected as master when other nodes indicate an active master";
             // lets tie break between discovered nodes
             /**
-             * 从已有主节点中，选举出（规则一样）
+             * 从已有主节点中，选举出（规则一样） -》 已经出现脑裂
              */
             return electMaster.tieBreakActiveMasters(activeMasters);
         }
@@ -957,6 +963,7 @@ public class ZenDiscovery extends AbstractLifecycleComponent implements Discover
 
         // TODO: do we want to force a new thread if we actively removed the master? this is to give a full pinging cycle
         // before a decision is made.
+        // 提交新的join任务
         joinThreadControl.startNewThreadIfNotRunning();
 
         if (clusterState.nodes().getMasterNodeId() != null) {

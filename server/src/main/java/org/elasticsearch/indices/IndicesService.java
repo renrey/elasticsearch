@@ -202,7 +202,7 @@ public class IndicesService extends AbstractLifecycleComponent
     private final ScriptService scriptService;
     private final ClusterService clusterService;
     private final Client client;
-    private volatile Map<String, IndexService> indices = emptyMap();
+    private volatile Map<String, IndexService> indices = emptyMap();// 使用uuid作为key
     private final Map<Index, List<PendingDelete>> pendingDeletes = new HashMap<>();
     private final AtomicInteger numUncompletedDeletes = new AtomicInteger();
     private final OldShardsStats oldShardsStats = new OldShardsStats();
@@ -232,6 +232,8 @@ public class IndicesService extends AbstractLifecycleComponent
 
     @Override
     protected void doStart() {
+
+        // 提交cacheCleaner缓存清理 ，定时1min
         // Start thread that will manage cleaning the field data cache periodically
         threadPool.schedule(this.cacheCleaner, this.cleanInterval, ThreadPool.Names.SAME);
 
@@ -516,6 +518,7 @@ public class IndicesService extends AbstractLifecycleComponent
      * Returns an IndexService for the specified index if exists otherwise a {@link IndexNotFoundException} is thrown.
      */
     public IndexService indexServiceSafe(Index index) {
+        // 直接通过index的uuid获取对IndexService
         IndexService indexService = indices.get(index.getUUID());
         if (indexService == null) {
             throw new IndexNotFoundException(index);
@@ -545,6 +548,7 @@ public class IndicesService extends AbstractLifecycleComponent
         if (hasIndex(index)) {
             throw new ResourceAlreadyExistsException(index);
         }
+        // 一堆index监听器！！！
         List<IndexEventListener> finalListeners = new ArrayList<>(builtInListeners);
         final IndexEventListener onStoreClose = new IndexEventListener() {
             @Override
@@ -562,6 +566,8 @@ public class IndicesService extends AbstractLifecycleComponent
         };
         finalListeners.add(onStoreClose);
         finalListeners.add(oldShardsStats);
+
+        // 创建IndexService
         final IndexService indexService =
                 createIndexService(
                         CREATE_INDEX,
@@ -576,6 +582,7 @@ public class IndicesService extends AbstractLifecycleComponent
                 indexService.addMetadataListener(imd -> updateDanglingIndicesInfo(index));
             }
             indexService.getIndexEventListener().afterIndexCreated(indexService);
+            // 放入当前index
             indices = newMapBuilder(indices).put(index.getUUID(), indexService).immutableMap();
             if (writeDanglingIndices) {
                 if (nodeWriteDanglingIndicesInfo) {
@@ -660,6 +667,7 @@ public class IndicesService extends AbstractLifecycleComponent
         for (IndexEventListener listener : builtInListeners) {
             indexModule.addIndexEventListener(listener);
         }
+        // 创建
         return indexModule.newIndexService(
                 indexCreationContext,
                 nodeEnv,
@@ -770,11 +778,15 @@ public class IndicesService extends AbstractLifecycleComponent
             final DiscoveryNode sourceNode) throws IOException {
         Objects.requireNonNull(retentionLeaseSyncer);
         ensureChangesAllowed();
+        // 通过routing路由规则，拿到对应 es index的 IndexService对象（本节点上的）
         IndexService indexService = indexService(shardRouting.index());
         assert indexService != null;
         RecoveryState recoveryState = indexService.createRecoveryState(shardRouting, targetNode, sourceNode);
+        // 调用创建shard对象-》实例创建
         IndexShard indexShard = indexService.createShard(shardRouting, globalCheckpointSyncer, retentionLeaseSyncer);
         indexShard.addShardFailureCallback(onShardFailure);
+
+        // 恢复数据
         indexShard.startRecovery(recoveryState, recoveryTargetService, recoveryListener, repositoriesService,
             (type, mapping) -> {
                 assert recoveryState.getRecoverySource().getType() == RecoverySource.Type.LOCAL_SHARDS:
@@ -1348,6 +1360,8 @@ public class IndicesService extends AbstractLifecycleComponent
         // Queries that create a scroll context cannot use the cache.
         // They modify the search context during their execution so using the cache
         // may invalidate the scroll for the next query.
+
+        // scroll 請求不缓存
         if (request.scroll() != null) {
             return false;
         }
@@ -1360,6 +1374,7 @@ public class IndicesService extends AbstractLifecycleComponent
             return false;
         }
 
+        // source且使用profile
         // Profiled queries should not use the cache
         if (request.source() != null && request.source().profile()) {
             return false;
@@ -1367,20 +1382,26 @@ public class IndicesService extends AbstractLifecycleComponent
 
         IndexSettings settings = context.indexShard().indexSettings();
         // if not explicitly set in the request, use the index setting, if not, use the request
-        if (request.requestCache() == null) {
+        if (request.requestCache() == null) {//默认
             if (settings.getValue(IndicesRequestCache.INDEX_CACHE_REQUEST_ENABLED_SETTING) == false) {
                 return false;
             } else if (context.size() != 0) {
+                /// 没设置requestCache，需要size=0才能缓存，即不做数据返回查询，只是是否存在数据
+
                 // If no request cache query parameter and shard request cache
                 // is enabled in settings don't cache for requests with size > 0
                 return false;
             }
         } else if (request.requestCache() == false) {
+            // 本身请求参数就不使用
             return false;
         }
+        // 下面就是开启request.requestCache()
+
         // We use the cacheKey of the index reader as a part of a key of the IndicesRequestCache.
         assert context.searcher().getIndexReader().getReaderCacheHelper() != null;
 
+        // 使用now in millis，应该就是本次的请求超时了
         // if now in millis is used (or in the future, a more generic "isDeterministic" flag
         // then we can't cache based on "now" key within the search request, as it is not deterministic
         if (context.getSearchExecutionContext().isCacheable() == false) {
@@ -1399,18 +1420,22 @@ public class IndicesService extends AbstractLifecycleComponent
      */
     public void loadIntoContext(ShardSearchRequest request, SearchContext context, QueryPhase queryPhase) throws Exception {
         assert canCache(request, context);
+        // 获取对应的lucene searcher的磁盘reader
         final DirectoryReader directoryReader = context.searcher().getDirectoryReader();
 
         boolean[] loadedFromCache = new boolean[] { true };
+        // 缓存key，就是序列化的字节数组
         BytesReference cacheKey = request.cacheKey();
+        // 查询并进行缓存
         BytesReference bytesReference = cacheShardLevelResult(
             context.indexShard(),
             context.getSearchExecutionContext().mappingCacheKey(),
             directoryReader,
             cacheKey,
             out -> {
-                queryPhase.execute(context);
-                context.queryResult().writeToNoId(out);
+                // 需要缓存的数据-》实际只能存512b
+                queryPhase.execute(context);// query查询
+                context.queryResult().writeToNoId(out);// 把结果写字节数组512b （docId，相关读）
                 loadedFromCache[0] = false;
             }
         );
@@ -1421,7 +1446,7 @@ public class IndicesService extends AbstractLifecycleComponent
             StreamInput in = new NamedWriteableAwareStreamInput(bytesReference.streamInput(), namedWriteableRegistry);
             result.readFromWithId(context.id(), in);
             result.setSearchShardTarget(context.shardTarget());
-        } else if (context.queryResult().searchTimedOut()) {
+        } else if (context.queryResult().searchTimedOut()) {// 请求超时会导致缓存失效
             // we have to invalidate the cache entry if we cached a query result form a request that timed out.
             // we can't really throw exceptions in the loading part to signal a timed out search to the outside world since if there are
             // multiple requests that wait for the cache entry to be calculated they'd fail all with the same exception.
@@ -1461,7 +1486,9 @@ public class IndicesService extends AbstractLifecycleComponent
         BytesReference cacheKey,
         CheckedConsumer<StreamOutput, IOException> loader
     ) throws Exception {
+        // 代表是单个shard级别
         IndexShardCacheEntity cacheEntity = new IndexShardCacheEntity(shard);
+        // 缓存值
         CheckedSupplier<BytesReference, IOException> supplier = () -> {
             /* BytesStreamOutput allows to pass the expected size but by default uses
              * BigArrays.PAGE_SIZE_IN_BYTES which is 16k. A common cached result ie.
@@ -1472,12 +1499,14 @@ public class IndicesService extends AbstractLifecycleComponent
              * results.*/
             final int expectedSizeInBytes = 512;
             try (BytesStreamOutput out = new BytesStreamOutput(expectedSizeInBytes)) {
+                // loader放入512b
                 loader.accept(out);
                 // for now, keep the paged data structure, which might have unused bytes to fill a page, but better to keep
                 // the memory properly paged instead of having varied sized bytes
                 return out.bytes();
             }
         };
+        // 放入incies下缓存
         return indicesRequestCache.getOrCompute(cacheEntity, supplier, mappingCacheKey, reader, cacheKey);
     }
 

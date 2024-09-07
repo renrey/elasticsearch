@@ -119,13 +119,21 @@ public class QueryPhase {
         }
     }
 
+    // 无返回值-》代表非阻塞异步执行
     public void execute(SearchContext searchContext) throws QueryPhaseExecutionException {
+        // 只使用suggest 的
         if (searchContext.hasOnlySuggest()) {
+            // suggest 执行
             suggestPhase.execute(searchContext);
+            // 放入结果
             searchContext.queryResult().topDocs(new TopDocsAndMaxScore(
                     new TopDocs(new TotalHits(0, TotalHits.Relation.EQUAL_TO), Lucene.EMPTY_SCORE_DOCS), Float.NaN),
                 new DocValueFormat[0]);
             return;
+            /**
+             * 结果 响应时存放位置：
+             * 上下文（searchContext）中的queryResult
+             */
         }
 
         if (LOGGER.isTraceEnabled()) {
@@ -135,13 +143,22 @@ public class QueryPhase {
         // Pre-process aggregations as late as possible. In the case of a DFS_Q_T_F
         // request, preProcess is called on the DFS phase phase, this is why we pre-process them
         // here to make sure it happens during the QUERY phase
+        // agg预先执行
         aggregationPhase.preProcess(searchContext);
+        /**
+         * 1. 执行查询操作！！！ -》lucene检索
+         * 检索结果 放入上下文的queryResult().topDocs()中
+         */
         boolean rescore = executeInternal(searchContext);
 
+        // 2. 检索后，得分计算
         if (rescore) { // only if we do a regular search
+            // 有结果才算
             rescorePhase.execute(searchContext);
         }
+        // 3. suggest 执行
         suggestPhase.execute(searchContext);
+        // 4. agg聚合 执行
         aggregationPhase.execute(searchContext);
 
         if (searchContext.getProfilers() != null) {
@@ -159,6 +176,8 @@ public class QueryPhase {
     static boolean executeInternal(SearchContext searchContext) throws QueryPhaseExecutionException {
         final ContextIndexSearcher searcher = searchContext.searcher();
         SortAndFormats sortAndFormatsForRewrittenNumericSort = null;
+
+        // lucene的IndexReader
         final IndexReader reader = searcher.getIndexReader();
         QuerySearchResult queryResult = searchContext.queryResult();
         queryResult.searchTimedOut(false);
@@ -251,6 +270,7 @@ public class QueryPhase {
                 }
             }
 
+            // 超时，应该有使用这个参数就是具体执行入口
             boolean timeoutSet = scrollContext == null && searchContext.timeout() != null &&
                 searchContext.timeout().equals(SearchService.NO_TIMEOUT) == false;
 
@@ -259,6 +279,7 @@ public class QueryPhase {
                 final long startTime = searchContext.getRelativeTimeInMillis();
                 final long timeout = searchContext.timeout().millis();
                 final long maxTime = startTime + timeout;
+                // 加入了个timeout检测返回函数
                 timeoutRunnable = searcher.addQueryCancellation(() -> {
                     final long time = searchContext.getRelativeTimeInMillis();
                     if (time > maxTime) {
@@ -281,15 +302,21 @@ public class QueryPhase {
             try {
                 boolean shouldRescore;
                 // if we are optimizing sort and there are no other collectors
+                /**
+                 * 应该就是这里执行lucene检索
+                 */
                 if (sortAndFormatsForRewrittenNumericSort!=null && collectors.size()==0 && searchContext.getProfilers()==null) {
                     shouldRescore = searchWithCollectorManager(searchContext, searcher, query, leafSorter, timeoutSet);
                 } else {
+                    // collector：收集原始结果、进行filter、排序
                     shouldRescore = searchWithCollector(searchContext, searcher, query, collectors, hasFilterCollector, timeoutSet);
                 }
 
                 // if we rewrote numeric long or date sort, restore fieldDocs based on the original sort
                 if (sortAndFormatsForRewrittenNumericSort!=null) {
+                    // 重新排序？
                     searchContext.sort(sortAndFormatsForRewrittenNumericSort); // restore SortAndFormats
+                    // 移除_score字段，并加入排序对象
                     restoreTopFieldDocs(queryResult, sortAndFormatsForRewrittenNumericSort);
                 }
 
@@ -317,18 +344,22 @@ public class QueryPhase {
         // create the top docs collector last when the other collectors are known
         final TopDocsCollectorContext topDocsFactory = createTopDocsCollectorContext(searchContext, hasFilterCollector);
         // add the top docs collector, the first collector context in the chain
-        collectors.addFirst(topDocsFactory);
+        collectors.addFirst(topDocsFactory);// 第一collect-》topDocsFactory
 
         final Collector queryCollector;
-        if (searchContext.getProfilers() != null) {
+        if (searchContext.getProfilers() != null) {// profile操作
             InternalProfileCollector profileCollector = QueryCollectorContext.createQueryCollectorWithProfiler(collectors);
             searchContext.getProfilers().getCurrentQueryProfiler().setCollector(profileCollector);
             queryCollector = profileCollector;
         } else {
+            // 创建 lucene中 结果收集器
             queryCollector = QueryCollectorContext.createQueryCollector(collectors);
         }
         QuerySearchResult queryResult = searchContext.queryResult();
         try {
+            /**
+             * 调用lucene的IndexReader的search进行检索
+             */
             searcher.search(query, queryCollector);
         } catch (EarlyTerminatingCollector.EarlyTerminationException e) {
             queryResult.terminatedEarly(true);
@@ -343,6 +374,8 @@ public class QueryPhase {
         if (searchContext.terminateAfter() != SearchContext.DEFAULT_TERMINATE_AFTER && queryResult.terminatedEarly() == null) {
             queryResult.terminatedEarly(false);
         }
+
+        // 保存结果 （从lucene对象）到result的topDocs
         for (QueryCollectorContext ctx : collectors) {
             ctx.postProcess(queryResult);
         }
@@ -355,6 +388,7 @@ public class QueryPhase {
      * we have already checked that there are no other collectors, no filters,
      * no search after, no scroll, no collapse, no track scores.
      * Absence of all other collectors and parameters allows us to use TopFieldCollector directly.
+     * 就是各种条件没有（filter、search after noscroll ）
      */
     private static boolean searchWithCollectorManager(SearchContext searchContext,
                                                       ContextIndexSearcher searcher,
@@ -541,11 +575,16 @@ public class QueryPhase {
      */
     private static void restoreTopFieldDocs(QuerySearchResult result, SortAndFormats originalSortAndFormats) {
         TopDocs topDocs = result.topDocs().topDocs;
+        // 遍历本次结果：每个doc的得分
         for (ScoreDoc scoreDoc : topDocs.scoreDocs) {
             FieldDoc fieldDoc = (FieldDoc) scoreDoc;
+            // 更新得分字段-》移除_score
             fieldDoc.fields = Arrays.copyOfRange(fieldDoc.fields, 1, fieldDoc.fields.length);
         }
+        // 新的结果集合
         TopFieldDocs newTopDocs = new TopFieldDocs(topDocs.totalHits, topDocs.scoreDocs, originalSortAndFormats.sort.getSort());
+
+        // 新排序结果放入
         result.topDocs(new TopDocsAndMaxScore(newTopDocs, Float.NaN), originalSortAndFormats.formats);
     }
 

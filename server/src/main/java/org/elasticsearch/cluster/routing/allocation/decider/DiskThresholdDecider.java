@@ -142,16 +142,21 @@ public class DiskThresholdDecider extends AllocationDecider {
 
     @Override
     public Decision canAllocate(ShardRouting shardRouting, RoutingNode node, RoutingAllocation allocation) {
+        // 获取每个node的磁盘情况
         ImmutableOpenMap<String, DiskUsage> usages = allocation.clusterInfo().getNodeMostAvailableDiskUsages();
         final Decision decision = earlyTerminate(allocation, usages);
         if (decision != null) {
             return decision;
         }
+        // 分布式下，继续
 
+        // index.routing.allocation.disk.watermark.ignore, 默认关闭
         if (SETTING_IGNORE_DISK_WATERMARKS.get(allocation.metadata().index(shardRouting.index()).getSettings())) {
             return YES_DISK_WATERMARKS_IGNORED;
         }
 
+        // 默认85%、90%
+        // low=15 high=10
         final double usedDiskThresholdLow = 100.0 - diskThresholdSettings.getFreeDiskThresholdLow();
         final double usedDiskThresholdHigh = 100.0 - diskThresholdSettings.getFreeDiskThresholdHigh();
 
@@ -163,6 +168,7 @@ public class DiskThresholdDecider extends AllocationDecider {
         // Cache the used disk percentage for displaying disk percentages consistent with documentation
         double usedDiskPercentage = usage.getUsedDiskAsPercentage();
         long freeBytes = usage.getFreeBytes();
+        // 空闲空间小于0肯定不可分配
         if (freeBytes < 0L) {
             final long sizeOfRelocatingShards = sizeOfRelocatingShards(node, false, usage.getPath(),
                 allocation.clusterInfo(), allocation.metadata(), allocation.routingTable());
@@ -186,8 +192,10 @@ public class DiskThresholdDecider extends AllocationDecider {
         boolean skipLowThresholdChecks = shardRouting.primary() &&
             shardRouting.active() == false && shardRouting.recoverySource().getType() == RecoverySource.Type.EMPTY_STORE;
 
+        // 小于low大小
         // checks for exact byte comparisons
         if (freeBytes < diskThresholdSettings.getFreeBytesThresholdLow().getBytes()) {
+            // low用于判断非主分片的
             if (skipLowThresholdChecks == false) {
                 if (logger.isDebugEnabled()) {
                     logger.debug("less than the required {} free bytes threshold ({} free) on node {}, preventing allocation",
@@ -200,6 +208,8 @@ public class DiskThresholdDecider extends AllocationDecider {
                     diskThresholdSettings.getLowWatermarkRaw(),
                     diskThresholdSettings.getFreeBytesThresholdLow(), freeBytesValue);
             } else if (freeBytes > diskThresholdSettings.getFreeBytesThresholdHigh().getBytes()) {
+                // high用来判断主分片的
+                // 大于high -》大于thread就是可分配
                 // Allow the shard to be allocated because it is primary that
                 // has never been allocated if it's under the high watermark
                 if (logger.isDebugEnabled()) {
@@ -209,6 +219,7 @@ public class DiskThresholdDecider extends AllocationDecider {
                 }
                 return YES_UNALLOCATED_PRIMARY_BETWEEN_WATERMARKS;
             } else {
+                // 小于high，但是是主分配
                 // Even though the primary has never been allocated, the node is
                 // above the high watermark, so don't allow allocating the shard
                 if (logger.isDebugEnabled()) {
@@ -226,6 +237,7 @@ public class DiskThresholdDecider extends AllocationDecider {
         }
 
         // checks for percentage comparisons
+        // 默认85% -》用百分比来比，跟上面的作用（不过上面用具体byte）
         if (freeDiskPercentage < diskThresholdSettings.getFreeDiskThresholdLow()) {
             // If the shard is a replica or is a non-empty primary, check the low threshold
             if (skipLowThresholdChecks == false) {
@@ -267,11 +279,13 @@ public class DiskThresholdDecider extends AllocationDecider {
         }
 
         // Secondly, check that allocating the shard to this node doesn't put it above the high watermark
+        // 计算shard占用大小
         final long shardSize = getExpectedShardSize(shardRouting, 0L,
             allocation.clusterInfo(), allocation.snapshotShardSizeInfo(), allocation.metadata(), allocation.routingTable());
         assert shardSize >= 0 : shardSize;
         double freeSpaceAfterShard = freeDiskPercentageAfterShardAssigned(usage, shardSize);
         long freeBytesAfterShard = freeBytes - shardSize;
+        // 看占用后，跟high比，需要大于high，不然失败
         if (freeBytesAfterShard < diskThresholdSettings.getFreeBytesThresholdHigh().getBytes()) {
             logger.warn("after allocating [{}] node [{}] would have less than the required threshold of " +
                     "{} free (currently {} free, estimated shard size is {}), preventing allocation", shardRouting,
@@ -296,6 +310,7 @@ public class DiskThresholdDecider extends AllocationDecider {
                 diskThresholdSettings.getHighWatermarkRaw(), usedDiskThresholdHigh, freeSpaceAfterShard);
         }
 
+        // 正常
         assert freeBytesAfterShard >= 0 : freeBytesAfterShard;
         return allocation.decision(Decision.YES, NAME,
                 "enough disk for shard on node, free: [%s], shard size: [%s], free after allocating shard: [%s]",
@@ -442,7 +457,7 @@ public class DiskThresholdDecider extends AllocationDecider {
 
     private Decision earlyTerminate(RoutingAllocation allocation, ImmutableOpenMap<String, DiskUsage> usages) {
         // Always allow allocation if the decider is disabled
-        if (diskThresholdSettings.isEnabled() == false) {
+        if (diskThresholdSettings.isEnabled() == false) {// 默认开启
             return YES_DISABLED;
         }
 

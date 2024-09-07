@@ -123,9 +123,14 @@ abstract class AbstractSearchAsyncAction<Result extends SearchPhaseResult> exten
         // we compute the shard index based on the natural order of the shards
         // that participate in the search request. This means that this number is
         // consistent between two requests that target the same shards.
+
+        /**
+         * 分配本次请求每组shards选择具体shard实例的规则
+         */
         List<SearchShardIterator> naturalOrder = new ArrayList<>(iterators);
         CollectionUtil.timSort(naturalOrder);
         for (int i = 0; i < naturalOrder.size(); i++) {
+            // 默认选择规则：是当前组的位置
             shardItIndexMap.put(naturalOrder.get(i), i);
         }
 
@@ -174,7 +179,7 @@ abstract class AbstractSearchAsyncAction<Result extends SearchPhaseResult> exten
      * 真正开始的search的地方
      */
     public final void start() {
-        // 无shard
+        // 目标无shard，直接响应
         if (getNumShards() == 0) {
             //no search shards to search on, bail with empty response
             //(it happens with search across _all with no indices around and consistent with broadcast operations)
@@ -197,10 +202,13 @@ abstract class AbstractSearchAsyncAction<Result extends SearchPhaseResult> exten
 
     @Override
     public final void run() {
+        // 这个主要是看有没有SearchShardIterator被标记skip
         for (final SearchShardIterator iterator : toSkipShardsIts) {
-            assert iterator.skip();
+            assert iterator.skip();// double check
+            // 被skip直接标记成功，没结果
             skipShard(iterator);
         }
+        // 可用shard(非skip)
         if (shardsIts.size() > 0) {
             assert request.allowPartialSearchResults() != null : "SearchRequest missing setting for allowPartialSearchResults";
             /**
@@ -238,11 +246,17 @@ abstract class AbstractSearchAsyncAction<Result extends SearchPhaseResult> exten
              */
             // 遍历每组shard
             for (int i = 0; i < shardsIts.size(); i++) {
+                // 选择当前组中的哪个shard，就是组id
                 final SearchShardIterator shardRoutings = shardsIts.get(i);
                 assert shardRoutings.skip() == false;
                 assert shardItIndexMap.containsKey(shardRoutings);
+                // 具体shard已在Action对象创建时分配置
                 int shardIndex = shardItIndexMap.get(shardRoutings);
-                //执行shard发送
+                // 对选择的shard实例发送query
+                /**
+                 * 执行请求
+                 * @see SearchQueryThenFetchAsyncAction#executePhaseOnShard(SearchShardIterator, SearchShardTarget, SearchActionListener)
+                 */
                 performPhaseOnShard(shardIndex, shardRoutings, shardRoutings.nextOrNull());
             }
         }
@@ -311,10 +325,11 @@ abstract class AbstractSearchAsyncAction<Result extends SearchPhaseResult> exten
                 shardIt.getClusterAlias(), shardIt.getOriginalIndices());
             onShardFailure(shardIndex, unassignedShard, shardIt, new NoShardAvailableActionException(shardIt.shardId()));
         } else {
+            // 限流的话放入map中，正常执行则是pendingExecutions=null
             final PendingExecutions pendingExecutions = throttleConcurrentRequests ?
                 pendingExecutionsPerNode.computeIfAbsent(shard.getNodeId(), n -> new PendingExecutions(maxConcurrentRequestsPerNode))
                 : null;
-            // 执行操作定义
+            // 执行操作定义 ——》封装因为可能限流执行，正常就是直接执行
             Runnable r = () -> {
                 final Thread thread = Thread.currentThread();
                 try {
@@ -327,13 +342,15 @@ abstract class AbstractSearchAsyncAction<Result extends SearchPhaseResult> exten
                             public void innerOnResponse(Result result) {
                                 try {
                                     /**
-                                     * 正常响应
+                                     * 收到对应的shard正常响应：
+                                     * 1. 读取结果？
+                                     * 2. 可能进入下一个阶段操作
                                      */
                                     onShardResult(result, shardIt);
                                 } catch (Exception exc) {
                                     onShardFailure(shardIndex, shard, shardIt, exc);
                                 } finally {
-                                    // 执行pendingExecutions下一个待执行的操作
+                                    // 执行pendingExecutions下一个待执行的操作-》其实是限流的执行，正常这里不会有用
                                     executeNext(pendingExecutions, thread);
                                 }
                             }
@@ -448,6 +465,7 @@ abstract class AbstractSearchAsyncAction<Result extends SearchPhaseResult> exten
                 logger.trace("[{}] Moving to next phase: [{}], based on results from: {} (cluster state version: {})",
                     currentPhase.getName(), nextPhase.getName(), resultsFrom, clusterState.version());
             }
+            // 执行下一阶段
             executePhase(nextPhase);
         }
     }
@@ -618,7 +636,8 @@ abstract class AbstractSearchAsyncAction<Result extends SearchPhaseResult> exten
         // cause the successor to read a wrong value from successfulOps if second phase is very fast ie. count etc.
         // increment all the "future" shards to update the total ops since we some may work and some may not...
         // and when that happens, we break on total ops, so we must maintain them
-        // 完成shard执行
+
+        // 完成shard执行 -》判断是否进入下一阶段
         successfulShardExecution(shardIt);
     }
 
@@ -633,9 +652,11 @@ abstract class AbstractSearchAsyncAction<Result extends SearchPhaseResult> exten
         } else {
             remainingOpsOnIterator = shardsIt.remaining() + 1;
         }
+        // 完成shard+1
         final int xTotalOps = totalOps.addAndGet(remainingOpsOnIterator);
+        // 所有shard请求都完成，进入下一个阶段
         if (xTotalOps == expectedTotalOps) {
-            onPhaseDone();
+            onPhaseDone();// 当前阶段完成
         } else if (xTotalOps > expectedTotalOps) {
             throw new AssertionError("unexpected higher total ops [" + xTotalOps + "] compared to expected [" + expectedTotalOps + "]",
                 new SearchPhaseExecutionException(getName(), "Shard failures", null, buildShardFailures()));
@@ -773,6 +794,7 @@ abstract class AbstractSearchAsyncAction<Result extends SearchPhaseResult> exten
 
     @Override
     public final void execute(Runnable command) {
+        // 提交线程池执行
         executor.execute(command);
     }
 
@@ -813,8 +835,11 @@ abstract class AbstractSearchAsyncAction<Result extends SearchPhaseResult> exten
         if (runnable != null) {
             assert throttleConcurrentRequests;
             if (originalThread == Thread.currentThread()) {
+                // 注意：searchaction 异步的点！！！-》search线程池实际用于执行第2阶段的操作
+                // 还是原来线程，提交线程池执行
                 fork(runnable);
             } else {
+                // 即已经是异步，就不提交，直接执行——》算是异步了
                 runnable.run();
             }
         }

@@ -34,7 +34,7 @@ public class CoordinationState {
 
     private static final Logger logger = LogManager.getLogger(CoordinationState.class);
 
-    private final DiscoveryNode localNode;
+    private final DiscoveryNode localNode;// 本地的
 
     private final ElectionStrategy electionStrategy;
 
@@ -42,17 +42,17 @@ public class CoordinationState {
     private final PersistedState persistedState;
 
     // transient state
-    private VoteCollection joinVotes;
+    private VoteCollection joinVotes;// join请求的选票
     private boolean startedJoinSinceLastReboot;
     private boolean electionWon;
     private long lastPublishedVersion;
     private VotingConfiguration lastPublishedConfiguration;
-    private VoteCollection publishVotes;
+    private VoteCollection publishVotes;// 收到publish响应的选票
 
     public CoordinationState(DiscoveryNode localNode, PersistedState persistedState, ElectionStrategy electionStrategy) {
         this.localNode = localNode;
 
-        // persisted state
+        // persisted state -已保存本地的
         this.persistedState = persistedState;
         this.electionStrategy = electionStrategy;
 
@@ -60,7 +60,7 @@ public class CoordinationState {
         this.joinVotes = new VoteCollection();
         this.startedJoinSinceLastReboot = false;
         this.electionWon = false;
-        this.lastPublishedVersion = 0L;
+        this.lastPublishedVersion = 0L;// 启动时就是0
         this.lastPublishedConfiguration = persistedState.getLastAcceptedState().getLastAcceptedConfiguration();
         this.publishVotes = new VoteCollection();
     }
@@ -70,6 +70,7 @@ public class CoordinationState {
     }
 
     public ClusterState getLastAcceptedState() {
+        // 实际就是本地最后 收到leader 的publish请求
         return persistedState.getLastAcceptedState();
     }
 
@@ -86,10 +87,14 @@ public class CoordinationState {
     }
 
     public VotingConfiguration getLastCommittedConfiguration() {
+        // 2pc阶段 第二阶段 -》不同就是未收到commit，相同commit
+        // 本地最后 收到leader 的publish请求 中 时已commit 的 ，也可能收到commit后的（即与LastAccepted相同）
         return getLastAcceptedState().getLastCommittedConfiguration();
     }
 
     public VotingConfiguration getLastAcceptedConfiguration() {
+        // 2pc第一阶段pre的内容
+        // 本地最后 收到leader 的publish请求 中 publish的（可能未comiit）
         return getLastAcceptedState().getLastAcceptedConfiguration();
     }
 
@@ -132,6 +137,7 @@ public class CoordinationState {
      */
     public void setInitialState(ClusterState initialState) {
 
+        // 就是说本地有持久化的集群配置，就不用初始化的
         final VotingConfiguration lastAcceptedConfiguration = getLastAcceptedConfiguration();
         if (lastAcceptedConfiguration.isEmpty() == false) {
             logger.debug("setInitialState: rejecting since last-accepted configuration is nonempty: {}", lastAcceptedConfiguration);
@@ -152,6 +158,7 @@ public class CoordinationState {
         assert initialState.getLastAcceptedConfiguration().isEmpty() == false;
         assert initialState.getLastCommittedConfiguration().isEmpty() == false;
 
+        // 本地原来没持久，所以还是生成一份初始使用的-》基于目前寻址已知道的节点
         persistedState.setLastAcceptedState(initialState);
     }
 
@@ -163,6 +170,7 @@ public class CoordinationState {
      * @throws CoordinationStateRejectedException if the arguments were incompatible with the current state of this object.
      */
     public Join handleStartJoin(StartJoinRequest startJoinRequest) {
+        // 开始的新选举 term 必须比本地的大 -》2个选举节点使用相同term，只会投票给最早收到的
         if (startJoinRequest.getTerm() <= getCurrentTerm()) {
             logger.debug("handleStartJoin: ignoring [{}] as term provided is not greater than current term [{}]",
                 startJoinRequest, getCurrentTerm());
@@ -172,6 +180,7 @@ public class CoordinationState {
 
         logger.debug("handleStartJoin: leaving term [{}] due to {}", getCurrentTerm(), startJoinRequest);
 
+        //  下面的操作 等于把已有选票抛弃
         if (joinVotes.isEmpty() == false) {
             final String reason;
             if (electionWon == false) {
@@ -184,6 +193,7 @@ public class CoordinationState {
             logger.debug("handleStartJoin: discarding {}: {}", joinVotes, reason);
         }
 
+        // 连term都变成那个node的
         persistedState.setCurrentTerm(startJoinRequest.getTerm());
         assert getCurrentTerm() == startJoinRequest.getTerm();
         lastPublishedVersion = 0;
@@ -245,17 +255,21 @@ public class CoordinationState {
             throw new CoordinationStateRejectedException("rejecting join since this node has not received its initial configuration yet");
         }
 
+        // 加入对应节点的选票（即默认是选择本地节点）
         boolean added = joinVotes.addJoinVote(join);
         boolean prevElectionWon = electionWon;
+
+        // 核心：判断是否 选举成功 超过半数
         electionWon = isElectionQuorum(joinVotes);
         assert prevElectionWon == false || electionWon : // we cannot go from won to not won
             "locaNode= " + localNode + ", join=" + join + ", joinVotes=" + joinVotes;
         logger.debug("handleJoin: added join {} from [{}] for election, electionWon={} lastAcceptedTerm={} lastAcceptedVersion={}", join,
             join.getSourceNode(), electionWon, lastAcceptedTerm, getLastAcceptedVersion());
 
+        // 成功选举
         if (electionWon && prevElectionWon == false) {
             logger.debug("handleJoin: election won in term [{}] with {}", getCurrentTerm(), joinVotes);
-            lastPublishedVersion = getLastAcceptedVersion();
+            lastPublishedVersion = getLastAcceptedVersion();// 上个cluster版本
         }
         return added;
     }
@@ -363,6 +377,7 @@ public class CoordinationState {
             logger.debug("handlePublishResponse: ignored response as election not won");
             throw new CoordinationStateRejectedException("election not won");
         }
+        // 对方必须term一样
         if (publishResponse.getTerm() != getCurrentTerm()) {
             logger.debug("handlePublishResponse: ignored publish response due to term mismatch (expected: [{}], actual: [{}])",
                 getCurrentTerm(), publishResponse.getTerm());
@@ -378,7 +393,9 @@ public class CoordinationState {
 
         logger.trace("handlePublishResponse: accepted publish response for version [{}] and term [{}] from [{}]",
             publishResponse.getVersion(), publishResponse.getTerm(), sourceNode);
+        // 加入发布选票
         publishVotes.addVote(sourceNode);
+        // 过半了，可以发生ApplyCommitRequest
         if (isPublishQuorum(publishVotes)) {
             logger.trace("handlePublishResponse: value committed for version [{}] and term [{}]",
                 publishResponse.getVersion(), publishResponse.getTerm());
@@ -395,6 +412,7 @@ public class CoordinationState {
      * @throws CoordinationStateRejectedException if the arguments were incompatible with the current state of this object.
      */
     public void handleCommit(ApplyCommitRequest applyCommit) {
+        // 认为不是自己leader
         if (applyCommit.getTerm() != getCurrentTerm()) {
             logger.debug("handleCommit: ignored commit request due to term mismatch " +
                     "(expected: [term {} version {}], actual: [term {} version {}])",
@@ -419,6 +437,7 @@ public class CoordinationState {
         logger.trace("handleCommit: applying commit request for term [{}] and version [{}]", applyCommit.getTerm(),
             applyCommit.getVersion());
 
+        // 把LastAccepted更新到LastCommitted
         persistedState.markLastAcceptedStateAsCommitted();
         assert getLastCommittedConfiguration().equals(getLastAcceptedConfiguration());
     }
@@ -477,6 +496,7 @@ public class CoordinationState {
         default void markLastAcceptedStateAsCommitted() {
             final ClusterState lastAcceptedState = getLastAcceptedState();
             Metadata.Builder metadataBuilder = null;
+            // lastAcceptedState（即publish过来的）中LastAccepted跟LastCommitted不同，更新到LastCommitted
             if (lastAcceptedState.getLastAcceptedConfiguration().equals(lastAcceptedState.getLastCommittedConfiguration()) == false) {
                 final CoordinationMetadata coordinationMetadata = CoordinationMetadata.builder(lastAcceptedState.coordinationMetadata())
                         .lastCommittedConfiguration(lastAcceptedState.getLastAcceptedConfiguration())
@@ -501,6 +521,7 @@ public class CoordinationState {
                     logger.info("cluster UUID set to [{}]", lastAcceptedState.metadata().clusterUUID());
                 }
             }
+            // 等于更新LastAcceptedState
             if (metadataBuilder != null) {
                 setLastAcceptedState(ClusterState.builder(lastAcceptedState).metadata(metadataBuilder).build());
             }
@@ -519,10 +540,12 @@ public class CoordinationState {
         private final Set<Join> joins;
 
         public boolean addVote(DiscoveryNode sourceNode) {
+            // 确定是master角色， 候选节点的 id与对象映射
             return sourceNode.isMasterNode() && nodes.put(sourceNode.getId(), sourceNode) == null;
         }
 
         public boolean addJoinVote(Join join) {
+            // 必须是新的
             final boolean added = addVote(join.getSourceNode());
             if (added) {
                 joins.add(join);
@@ -536,6 +559,7 @@ public class CoordinationState {
         }
 
         public boolean isQuorum(VotingConfiguration configuration) {
+            // 当前已知的选票数量
             return configuration.hasQuorum(nodes.keySet());
         }
 

@@ -84,7 +84,10 @@ public class RoutingNodes implements Iterable<RoutingNode> {
         this.readOnly = readOnly;
         final RoutingTable routingTable = clusterState.routingTable();
 
+        // 每个node 分配到的shard？
         Map<String, LinkedHashMap<ShardId, ShardRouting>> nodesToShards = new HashMap<>();
+
+        // 遍历所有数据节点-》往nodesToShards填充 每个数据node，并生成放入map
         // fill in the nodeToShards with the "live" nodes
         for (ObjectCursor<DiscoveryNode> cursor : clusterState.nodes().getDataNodes().values()) {
             nodesToShards.put(cursor.value.getId(), new LinkedHashMap<>()); // LinkedHashMap to preserve order
@@ -92,44 +95,55 @@ public class RoutingNodes implements Iterable<RoutingNode> {
 
         // fill in the inverse of node -> shards allocated
         // also fill replicaSet information
+        // 遍历现有 所有index路由表
         for (ObjectCursor<IndexRoutingTable> indexRoutingTable : routingTable.indicesRouting().values()) {
+            // 遍历index下 逻辑shard（组）
             for (IndexShardRoutingTable indexShard : indexRoutingTable.value) {
                 assert indexShard.primary != null;
+                // 遍历具体shard
                 for (ShardRouting shard : indexShard) {
                     // to get all the shards belonging to an index, including the replicas,
                     // we define a replica set and keep track of it. A replica set is identified
                     // by the ShardId, as this is common for primary and replicas.
                     // A replica Set might have one (and not more) replicas with the state of RELOCATING.
-                    if (shard.assignedToNode()) {
+                    if (shard.assignedToNode()) {// 已经分配了节点
+
+                        // 就是把具体shard 实例 存到对应的node上
                         Map<ShardId, ShardRouting> entries = nodesToShards.computeIfAbsent(shard.currentNodeId(),
                             k -> new LinkedHashMap<>()); // LinkedHashMap to preserve order
                         ShardRouting previousValue = entries.put(shard.shardId(), shard);
                         if (previousValue != null) {
                             throw new IllegalArgumentException("Cannot have two different shards with same shard id on same node");
                         }
+                        // 加到assignedShards
                         assignedShardsAdd(shard);
                         if (shard.relocating()) {
+                            // 正在重分配
                             relocatingShards++;
+
+                            // 把当前shard 记录到 正在重分配的node上
                             // LinkedHashMap to preserve order.
                             // Add the counterpart shard with relocatingNodeId reflecting the source from which
                             // it's relocating from.
                             entries = nodesToShards.computeIfAbsent(shard.relocatingNodeId(),
                                 k -> new LinkedHashMap<>());
                             ShardRouting targetShardRouting = shard.getTargetRelocatingShard();
-                            addInitialRecovery(targetShardRouting, indexShard.primary);
+                            addInitialRecovery(targetShardRouting, indexShard.primary);// 恢复中
                             previousValue = entries.put(targetShardRouting.shardId(), targetShardRouting);
                             if (previousValue != null) {
                                 throw new IllegalArgumentException("Cannot have two different shards with same shard id on same node");
                             }
-                            assignedShardsAdd(targetShardRouting);
+                            assignedShardsAdd(targetShardRouting);// 加到assignedShards
                         } else if (shard.initializing()) {
                             if (shard.primary()) {
                                 inactivePrimaryCount++;
                             }
                             inactiveShardCount++;
-                            addInitialRecovery(shard, indexShard.primary);
+                            addInitialRecovery(shard, indexShard.primary);// 恢复中
                         }
                     } else {
+                        // 没有可用的node分配了（每个node都有这个shard组的shard）
+                        // 未分配的，大概后面就是需要分配的
                         unassignedShards.add(shard);
                     }
                 }
@@ -1119,10 +1133,12 @@ public class RoutingNodes implements Iterable<RoutingNode> {
      * the first node, then the first shard of the second node, etc. until one shard from each node has been returned.
      * The iterator then resumes on the first node by returning the second shard and continues until all shards from
      * all the nodes have been returned.
+     * 大概就是1个node返回1个shard，然后下一个node返回1个shard这样
      */
     public Iterator<ShardRouting> nodeInterleavedShardIterator() {
         final Queue<Iterator<ShardRouting>> queue = new ArrayDeque<>();
         for (Map.Entry<String, RoutingNode> entry : nodesToShards.entrySet()) {
+            // 加入就是每个node的shard迭代器
             queue.add(entry.getValue().copyShards().iterator());
         }
         return new Iterator<ShardRouting>() {
@@ -1140,9 +1156,10 @@ public class RoutingNodes implements Iterable<RoutingNode> {
                 if (hasNext() == false) {
                     throw new NoSuchElementException();
                 }
+                // 出一个node
                 Iterator<ShardRouting> iter = queue.poll();
-                ShardRouting result = iter.next();
-                queue.offer(iter);
+                ShardRouting result = iter.next();// 返回这个的node 一个shard
+                queue.offer(iter);// 又放回queue
                 return result;
             }
 

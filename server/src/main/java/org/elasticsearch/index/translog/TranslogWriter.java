@@ -176,27 +176,34 @@ public class TranslogWriter extends BaseTranslogReader implements Closeable {
      */
     public Translog.Location add(final BytesReference data, final long seqNo) throws IOException {
         long bufferedBytesBeforeAdd = this.bufferedBytes;
+        // 已buffer空间 达到上限，执行写入文件（刷盘）
         if (bufferedBytesBeforeAdd >= forceWriteThreshold) {
+            // buffer内容大小超过上限4倍，必须写入，没超过尝试但不一定写入（未竞争锁成不执行）
+            // 把buffer内容写入文件
             writeBufferedOps(Long.MAX_VALUE, bufferedBytesBeforeAdd >= forceWriteThreshold * 4);
         }
 
         final Translog.Location location;
         synchronized (this) {
             ensureOpen();
+            // 创建buffer流-》缓冲区，应该是16kb
             if (buffer == null) {
                 buffer = new ReleasableBytesStreamOutput(bigArrays);
             }
             assert bufferedBytes == buffer.size();
             final long offset = totalOffset;
             totalOffset += data.length();
+            // 内容字节数组 写入buffer缓冲
             data.writeTo(buffer);
 
             assert minSeqNo != SequenceNumbers.NO_OPS_PERFORMED || operationCounter == 0;
             assert maxSeqNo != SequenceNumbers.NO_OPS_PERFORMED || operationCounter == 0;
 
+            // 记录translog的seqNo
             minSeqNo = SequenceNumbers.min(minSeqNo, seqNo);
             maxSeqNo = SequenceNumbers.max(maxSeqNo, seqNo);
 
+            // 未sync刷盘计数+1
             nonFsyncedSequenceNumbers.add(seqNo);
 
             operationCounter++;
@@ -204,7 +211,7 @@ public class TranslogWriter extends BaseTranslogReader implements Closeable {
             assert assertNoSeqNumberConflict(seqNo, data);
 
             location = new Translog.Location(generation, offset, data.length());
-            bufferedBytes = buffer.size();
+            bufferedBytes = buffer.size();// buffer中内容占用空间
         }
 
         return location;
@@ -324,6 +331,7 @@ public class TranslogWriter extends BaseTranslogReader implements Closeable {
             try (ReleasableLock toClose = writeLock.acquire()) {
                 synchronized (this) {
                     try {
+                        // 刷盘
                         sync(); // sync before we close..
                     } catch (final Exception ex) {
                         closeWithTragicEvent(ex);
@@ -335,11 +343,12 @@ public class TranslogWriter extends BaseTranslogReader implements Closeable {
                     assert totalOffset == lastSyncedCheckpoint.offset;
                     if (closed.compareAndSet(false, true)) {
                         try {
-                            checkpointChannel.close();
+                            checkpointChannel.close();// checkpoint关闭流
                         } catch (final Exception ex) {
                             closeWithTragicEvent(ex);
                             throw ex;
                         }
+                        // 新增对象
                         return new TranslogReader(getLastSyncedCheckpoint(), channel, path, header);
                     } else {
                         throw new AlreadyClosedException("translog [" + getGeneration() + "] is already closed (path [" + path + "]",
@@ -387,6 +396,7 @@ public class TranslogWriter extends BaseTranslogReader implements Closeable {
      */
     final boolean syncUpTo(long offset) throws IOException {
         if (lastSyncedCheckpoint.offset < offset && syncNeeded()) {
+            // 底层还是个同步锁
             synchronized (syncLock) { // only one sync/checkpoint should happen concurrently but we wait
                 if (lastSyncedCheckpoint.offset < offset && syncNeeded()) {
                     // double checked locking - we don't want to fsync unless we have to and now that we have
@@ -398,6 +408,7 @@ public class TranslogWriter extends BaseTranslogReader implements Closeable {
                         synchronized (this) {
                             ensureOpen();
                             checkpointToSync = getCheckpoint();
+                            // 把buffer内容转成可用字节对象
                             toWrite = pollOpsToWrite();
                             flushedSequenceNumbers = nonFsyncedSequenceNumbers;
                             nonFsyncedSequenceNumbers = new LongArrayList(64);
@@ -405,6 +416,7 @@ public class TranslogWriter extends BaseTranslogReader implements Closeable {
 
                         try {
                             // Write ops will release operations.
+                            // 把上面的buffer 内容写入文件刷盘
                             writeAndReleaseOps(toWrite);
                         } catch (final Exception ex) {
                             closeWithTragicEvent(ex);
@@ -414,8 +426,11 @@ public class TranslogWriter extends BaseTranslogReader implements Closeable {
                     // now do the actual fsync outside of the synchronized block such that
                     // we can continue writing to the buffer etc.
                     try {
+                        // fsync保证 文件流刷盘 （可能有其他线程也write了）
                         channel.force(false);
+                        // 写入checkpoint文件 -》内容写入文件，并强制刷盘
                         writeCheckpoint(checkpointChannel, checkpointPath, checkpointToSync);
+                        // 可能丢失：translog内容写入，但checkpoint丢失
                     } catch (final Exception ex) {
                         closeWithTragicEvent(ex);
                         throw ex;
@@ -432,6 +447,7 @@ public class TranslogWriter extends BaseTranslogReader implements Closeable {
     }
 
     private void writeBufferedOps(long offset, boolean blockOnExistingWriter) throws IOException {
+        // blockOnExistingWriter：就是有其他writer是否一定写入，true就是一定写入，false就是尝试竞争锁，失败就不写
         try (ReleasableLock locked = blockOnExistingWriter ? writeLock.acquire() : writeLock.tryAcquire()) {
             try {
                 if (locked != null && offset > getWrittenOffset()) {
@@ -450,6 +466,7 @@ public class TranslogWriter extends BaseTranslogReader implements Closeable {
             ReleasableBytesStreamOutput toWrite = this.buffer;
             this.buffer = null;
             this.bufferedBytes = 0;
+            // buffer的封装对象，基于buffer生成字节
             return new ReleasableBytesReference(toWrite.bytes(), toWrite);
         } else {
             return ReleasableBytesReference.empty();
@@ -463,27 +480,33 @@ public class TranslogWriter extends BaseTranslogReader implements Closeable {
 
             BytesRefIterator iterator = toWrite.iterator();
             BytesRef current;
+            // 遍历toWrite （ translog buffer 大小16k）
             while ((current = iterator.next()) != null) {
                 int currentBytesConsumed = 0;
                 while (currentBytesConsumed != current.length) {
                     int nBytesToWrite = Math.min(current.length - currentBytesConsumed, ioBuffer.remaining());
+                    // 往io buffer写入内容 -> 注意此时的io buffer 是直接内存！！！-》直接零拷贝，自己控制缓冲区大小，不使用java原生的
                     ioBuffer.put(current.bytes, current.offset + currentBytesConsumed, nBytesToWrite);
                     currentBytesConsumed += nBytesToWrite;
-                    if (ioBuffer.hasRemaining() == false) {
-                        ioBuffer.flip();
-                        writeToFile(ioBuffer);
-                        ioBuffer.clear();
+                    if (ioBuffer.hasRemaining() == false) {// 已把io buffer写满了
+                        ioBuffer.flip();// 重置开始下标-》为了下面的写入
+                        writeToFile(ioBuffer);            // 把io buffer内容写入文件
+                        ioBuffer.clear();// 清空buffer内容
                     }
                 }
             }
             ioBuffer.flip();
+            // 把io buffer内容写入文件-> 等于循环里的最后一次，把剩余的也写入
             writeToFile(ioBuffer);
         }
     }
 
+    // 把io buffer内容写入文件
     @SuppressForbidden(reason = "Channel#write")
     private void writeToFile(ByteBuffer ioBuffer) throws IOException {
+        // 缓冲区有内容
         while (ioBuffer.remaining() > 0) {
+            // 从disk io buffer缓冲区写入 文件流 -> 执行write
             channel.write(ioBuffer);
         }
     }
@@ -508,9 +531,10 @@ public class TranslogWriter extends BaseTranslogReader implements Closeable {
     }
 
     private static void writeCheckpoint(
-        final FileChannel fileChannel,
-        final Path checkpointFile,
-        final Checkpoint checkpoint) throws IOException {
+        final FileChannel fileChannel,// 文件流通道
+        final Path checkpointFile,// 路径
+        final Checkpoint checkpoint) throws IOException { // checkpoint内容
+        // 生成checkpoint内容字节数组，并写入文件强制刷盘
         Checkpoint.write(fileChannel, checkpointFile, checkpoint);
     }
 

@@ -52,7 +52,7 @@ import static org.elasticsearch.rest.RestStatus.INTERNAL_SERVER_ERROR;
 import static org.elasticsearch.rest.RestStatus.METHOD_NOT_ALLOWED;
 import static org.elasticsearch.rest.RestStatus.NOT_ACCEPTABLE;
 import static org.elasticsearch.rest.RestStatus.OK;
-
+// 把具体业务请求提交到业务执行的入口
 public class RestController implements HttpServerTransport.Dispatcher {
 
     private static final Logger logger = LogManager.getLogger(RestController.class);
@@ -93,6 +93,7 @@ public class RestController implements HttpServerTransport.Dispatcher {
         this.handlerWrapper = handlerWrapper;
         this.client = client;
         this.circuitBreakerService = circuitBreakerService;
+        // 注册一个url的handler
         registerHandlerNoWrap(RestRequest.Method.GET, "/favicon.ico",
             (request, channel, clnt) ->
                 channel.sendResponse(new BytesRestResponse(RestStatus.OK, "image/x-icon", FAVICON_RESPONSE)));
@@ -201,6 +202,7 @@ public class RestController implements HttpServerTransport.Dispatcher {
     @Override
     public void dispatchRequest(RestRequest request, RestChannel channel, ThreadContext threadContext) {
         try {
+            // 这个名字就是从所有action里找
             tryAllHandlers(request, channel, threadContext);
         } catch (Exception e) {
             try {
@@ -364,6 +366,7 @@ public class RestController implements HttpServerTransport.Dispatcher {
                         return;
                     }
                 } else {
+                    // 找到对应action
                     /**
                      * 认为请求可以被处理，且找到handler，调用
                      */

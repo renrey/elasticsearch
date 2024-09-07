@@ -45,6 +45,8 @@ public class NettyAllocator {
             DESCRIPTION = "[name=netty_default, suggested_max_allocation_size=" + new ByteSizeValue(SUGGESTED_MAX_ALLOCATION_SIZE)
                 + ", factors={es.unsafe.use_netty_default_allocator=true}]";
         } else {
+            // es实现的
+
             final long heapSizeInBytes = JvmInfo.jvmInfo().getMem().getHeapMax().getBytes();
             final boolean g1gcEnabled = Boolean.parseBoolean(JvmInfo.jvmInfo().useG1GC());
             final long g1gcRegionSizeInBytes = JvmInfo.jvmInfo().getG1RegionSize();
@@ -147,7 +149,7 @@ public class NettyAllocator {
         if (ALLOCATOR instanceof NoDirectBuffers) {
             return CopyBytesServerSocketChannel.class; // 默认
         } else {
-            return NioServerSocketChannel.class;
+            return NioServerSocketChannel.class; // netty原生
         }
     }
 

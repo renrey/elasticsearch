@@ -44,6 +44,7 @@ public class Netty4HttpRequest implements HttpRequest {
     private final boolean pooled;
 
     Netty4HttpRequest(FullHttpRequest request) {
+        // 默认realease = false、pooled=true
         this(request, new HttpHeadersMap(request.headers()), new AtomicBoolean(false), true,
             Netty4Utils.toBytesReference(request.content()));
     }

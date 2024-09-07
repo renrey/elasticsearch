@@ -23,7 +23,7 @@ public class CustomFieldsVisitor extends FieldsVisitor {
 
     public CustomFieldsVisitor(Set<String> fields, boolean loadSource) {
         super(loadSource);
-        this.fields = fields;
+        this.fields = fields;// 字段类型
     }
 
     @Override

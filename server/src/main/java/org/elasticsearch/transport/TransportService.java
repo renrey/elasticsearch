@@ -1039,6 +1039,8 @@ public class TransportService extends AbstractLifecycleComponent
         handler = interceptor.interceptHandler(action, executor, false, handler);
         RequestHandlerRegistry<Request> reg = new RequestHandlerRegistry<>(
             action, requestReader, taskManager, handler, executor, false, true);
+
+        // 注册到transport（服务端）的handler集合中
         transport.registerRequestHandler(reg);
     }
 

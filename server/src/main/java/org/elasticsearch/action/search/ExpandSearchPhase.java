@@ -85,6 +85,7 @@ final class ExpandSearchPhase extends SearchPhase {
                     multiRequest.add(groupRequest);
                 }
             }
+            //
             context.getSearchTransport().sendExecuteMultiSearch(multiRequest, context.getTask(),
                 ActionListener.wrap(response -> {
                     Iterator<MultiSearchResponse.Item> it = response.iterator();
@@ -102,10 +103,11 @@ final class ExpandSearchPhase extends SearchPhase {
                             hit.getInnerHits().put(innerHitBuilder.getName(), innerHits);
                         }
                     }
-                    context.sendSearchResponse(searchResponse, queryResults);
+                    context.sendSearchResponse(searchResponse, queryResults);// 发送响应
                 }, context::onFailure)
             );
         } else {
+            // 正常就是发送响应
             context.sendSearchResponse(searchResponse, queryResults);
         }
     }

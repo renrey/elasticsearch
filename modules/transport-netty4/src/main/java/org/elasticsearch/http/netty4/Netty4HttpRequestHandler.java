@@ -28,9 +28,11 @@ class Netty4HttpRequestHandler extends SimpleChannelInboundHandler<HttpPipelined
         final Netty4HttpChannel channel = ctx.channel().attr(Netty4HttpServerTransport.HTTP_CHANNEL_KEY).get();
         boolean success = false;
         try {
+            // 转发给serverTransport，进行业务处理
             serverTransport.incomingRequest(httpRequest, channel);
             success = true;
         } finally {
+            // 出现异常，释放当前httpRequest对象
             if (success == false) {
                 httpRequest.release();
             }

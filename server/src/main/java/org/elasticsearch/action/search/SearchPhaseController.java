@@ -146,7 +146,9 @@ public final class SearchPhaseController {
         if (topDocs.isEmpty() && reducedCompletionSuggestions.isEmpty()) {
             return SortedTopDocs.EMPTY;
         }
-        // 合并
+        /**
+         * 合并doc
+         */
         final TopDocs mergedTopDocs = mergeTopDocs(topDocs, size, ignoreFrom ? 0 : from);
         final ScoreDoc[] mergedScoreDocs = mergedTopDocs == null ? EMPTY_DOCS : mergedTopDocs.scoreDocs;
         ScoreDoc[] scoreDocs = mergedScoreDocs;
@@ -189,9 +191,11 @@ public final class SearchPhaseController {
             return null;
         }
         final boolean setShardIndex = false;
+        // 拿到第一shard的doc
         final TopDocs topDocs = results.stream().findFirst().get();
         final TopDocs mergedTopDocs;
         final int numShards = results.size();
+        // 只有1个shard，且直接从头（无须做前面截取）
         if (numShards == 1 && from == 0) { // only one shard and no pagination we can just return the topDocs as we got them.
             return topDocs;
         } else if (topDocs instanceof CollapseTopFieldDocs) {
@@ -201,10 +205,17 @@ public final class SearchPhaseController {
             mergedTopDocs = CollapseTopFieldDocs.merge(sort, from, topN, shardTopDocs, setShardIndex);
         } else if (topDocs instanceof TopFieldDocs) {
             TopFieldDocs firstTopDocs = (TopFieldDocs) topDocs;
+            // 先生成sort条件字段
             final Sort sort = new Sort(firstTopDocs.fields);
-            // 把result转成数组
+            /**
+             * 转出TopFieldDocs数组
+             * 数量还是分片数
+             */
             final TopFieldDocs[] shardTopDocs = results.toArray(new TopFieldDocs[numShards]);
-            // 合并
+            /**
+             * 就是取出足够start到topN的数据，就是每次比较每个shard结果最值，取n个shard结果中最值
+             * 合并：lucenez
+             */
             mergedTopDocs = TopDocs.merge(sort, from, topN, shardTopDocs, setShardIndex);
         } else {
             final TopDocs[] shardTopDocs = results.toArray(new TopDocs[numShards]);
@@ -243,6 +254,8 @@ public final class SearchPhaseController {
         IntArrayList[] docIdsToLoad = new IntArrayList[numShards];
         // 遍历doc，按照shard划分docid
         for (ScoreDoc shardDoc : shardDocs) {
+            // 已知结果中会返回shardIndex代表doc所在的分片？
+            // 就是docId放入到对应 shard下标的 数组
             IntArrayList shardDocIdsToLoad = docIdsToLoad[shardDoc.shardIndex];
             if (shardDocIdsToLoad == null) {
                 shardDocIdsToLoad = docIdsToLoad[shardDoc.shardIndex] = new IntArrayList();
@@ -443,6 +456,7 @@ public final class SearchPhaseController {
         int from = 0;
         int size = 0;
         DocValueFormat[] sortValueFormats = null;
+        // 遍历结果
         for (SearchPhaseResult entry : queryResults) {
             QuerySearchResult result = entry.queryResult();
             from = result.from();
@@ -482,7 +496,9 @@ public final class SearchPhaseController {
         }
         final InternalAggregations aggregations = reduceAggs(aggReduceContextBuilder, performFinalReduce, bufferedAggs);
         final SearchProfileShardResults shardResults = profileResults.isEmpty() ? null : new SearchProfileShardResults(profileResults);
-        // doc集合
+        /**
+         * 聚合去重每个shard结果的doc，得到最后docId 集合
+         */
         final SortedTopDocs sortedTopDocs = sortDocs(isScrollRequest, bufferedTopDocs, from, size, reducedCompletionSuggestions);
         final TotalHits totalHits = topDocsStats.getTotalHits();
         return new ReducedQueryPhase(totalHits, topDocsStats.fetchHits, topDocsStats.getMaxScore(),

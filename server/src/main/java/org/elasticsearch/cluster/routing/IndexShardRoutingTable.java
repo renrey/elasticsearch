@@ -225,6 +225,7 @@ public class IndexShardRoutingTable implements Iterable<ShardRouting> {
      * its random within the active shards, and initializing shards are the last to iterate through.
      */
     public ShardIterator activeInitializingShardsRandomIt() {
+        // 下一个
         return activeInitializingShardsIt(shuffler.nextSeed());
     }
 
@@ -237,7 +238,7 @@ public class IndexShardRoutingTable implements Iterable<ShardRouting> {
             return new PlainShardIterator(shardId, shuffler.shuffle(activeShards, seed));
         }
         ArrayList<ShardRouting> ordered = new ArrayList<>(activeShards.size() + allInitializingShards.size());
-        ordered.addAll(shuffler.shuffle(activeShards, seed));
+        ordered.addAll(shuffler.shuffle(activeShards, seed));// 选一个
         ordered.addAll(allInitializingShards);
         return new PlainShardIterator(shardId, ordered);
     }
@@ -469,12 +470,14 @@ public class IndexShardRoutingTable implements Iterable<ShardRouting> {
         ArrayList<ShardRouting> notPreferred = new ArrayList<>(activeShards.size() + allInitializingShards.size());
         // fill it in a randomized fashion
         for (ShardRouting shardRouting : shuffler.shuffle(activeShards)) {
+            // 当前shard实例有指定nodeId
             if (nodeIds.contains(shardRouting.currentNodeId())) {
                 preferred.add(shardRouting);
             } else {
                 notPreferred.add(shardRouting);
             }
         }
+        // 就是指定的优先
         preferred.addAll(notPreferred);
         if (allInitializingShards.isEmpty() == false) {
             preferred.addAll(allInitializingShards);

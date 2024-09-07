@@ -182,6 +182,9 @@ public final class NodeEnvironment  implements Closeable {
 
         private final int nodeId;
         private final Lock[] locks;
+
+        // 本地node实例的数据目录路径：/数据目录/nodes/id
+        // 默认只有1个：/数据目录/nodes/0
         private final NodePath[] nodePaths;
 
         /**
@@ -195,15 +198,19 @@ public final class NodeEnvironment  implements Closeable {
             nodePaths = new NodePath[environment.dataFiles().length];
             locks = new Lock[nodePaths.length];
             try {
-                final Path[] dataPaths = environment.dataFiles();
+                final Path[] dataPaths = environment.dataFiles();// 就是配置的path.data数据目录
                 for (int dirIndex = 0; dirIndex < dataPaths.length; dirIndex++) {
+                    // 单个目录下
                     Path dataDir = dataPaths[dirIndex];
+                    // /数据目录/nodes/id(第1个是0)
                     Path dir = resolveNodePath(dataDir, nodeId);
                     if (pathFunction.apply(dir) == false) {
                         continue;
                     }
+                    // 创建lucene的目录对象
                     try (Directory luceneDir = FSDirectory.open(dir, NativeFSLockFactory.INSTANCE)) {
                         logger.trace("obtaining node lock on {} ...", dir.toAbsolutePath());
+                        // node.lock文件锁
                         locks[dirIndex] = luceneDir.obtainLock(NODE_LOCK_FILENAME);
                         nodePaths[dirIndex] = new NodePath(dir);
                     } catch (IOException e) {
@@ -254,14 +261,16 @@ public final class NodeEnvironment  implements Closeable {
         try {
             sharedDataPath = environment.sharedDataFile();
             IOException lastException = null;
-            int maxLocalStorageNodes = MAX_LOCAL_STORAGE_NODES_SETTING.get(settings);
+            int maxLocalStorageNodes = MAX_LOCAL_STORAGE_NODES_SETTING.get(settings);// 就是本地可进行node实例数，默认1
 
             final AtomicReference<IOException> onCreateDirectoriesException = new AtomicReference<>();
             for (int possibleLockId = 0; possibleLockId < maxLocalStorageNodes; possibleLockId++) {
                 try {
+                    // 创建对应node数据目录，并创建lucene Directory ，申请（node.lock）文件锁
                     nodeLock = new NodeLock(possibleLockId, logger, environment,
                         dir -> {
                             try {
+                                // 创建节点目录： /数据目录/nodes/0
                                 Files.createDirectories(dir);
                             } catch (IOException e) {
                                 onCreateDirectoriesException.set(e);

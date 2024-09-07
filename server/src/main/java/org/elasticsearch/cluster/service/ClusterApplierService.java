@@ -365,6 +365,7 @@ public class ClusterApplierService extends AbstractLifecycleComponent implements
         return true;
     }
 
+    // 通过submitStateUpdateTask提交到线程池
     private void runTask(UpdateTask task) {
         if (lifecycle.started() == false) {
             logger.debug("processing [{}]: ignoring, cluster applier service not started", task.source);
@@ -392,8 +393,10 @@ public class ClusterApplierService extends AbstractLifecycleComponent implements
         }
 
         if (previousClusterState == newClusterState) {
+            // no change 无改变
             TimeValue executionTime = TimeValue.timeValueMillis(Math.max(0, currentTimeInMillis() - startTimeMS));
             logger.debug("processing [{}]: took [{}] no change in cluster state", task.source, executionTime);
+            // 但会做一些操作
             warnAboutSlowTaskIfNeeded(executionTime, task.source, stopWatch);
             task.listener.onSuccess(task.source);
         } else {
@@ -404,6 +407,7 @@ public class ClusterApplierService extends AbstractLifecycleComponent implements
                 logger.debug("cluster state updated, version [{}], source [{}]", newClusterState.version(), task.source);
             }
             try {
+                // 发生改变执行
                 applyChanges(task, previousClusterState, newClusterState, stopWatch);
                 TimeValue executionTime = TimeValue.timeValueMillis(Math.max(0, currentTimeInMillis() - startTimeMS));
                 logger.debug("processing [{}]: took [{}] done applying updated cluster state (version: {}, uuid: {})", task.source,
@@ -452,6 +456,7 @@ public class ClusterApplierService extends AbstractLifecycleComponent implements
             logger.debug("applying settings from cluster state with version {}", newClusterState.version());
             final Settings incomingSettings = clusterChangedEvent.state().metadata().settings();
             try (Releasable ignored = stopWatch.timing("applying settings")) {
+                // 更新新的状态
                 clusterSettings.applySettings(incomingSettings);
             }
         }

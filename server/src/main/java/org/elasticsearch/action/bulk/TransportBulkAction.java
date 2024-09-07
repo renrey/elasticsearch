@@ -159,6 +159,7 @@ public class TransportBulkAction extends HandledTransportAction<BulkRequest, Bul
     @Override
     protected void doExecute(Task task, BulkRequest bulkRequest, ActionListener<BulkResponse> listener) {
         final long indexingBytes = bulkRequest.ramBytesUsed();
+        // 限定系统执行
         final boolean isOnlySystem = isOnlySystem(bulkRequest, clusterService.state().metadata().getIndicesLookup(), systemIndices);
         final Releasable releasable = indexingPressure.markCoordinatingOperationStarted(indexingBytes, isOnlySystem);
         final ActionListener<BulkResponse> releasingListener = ActionListener.runBefore(listener, releasable::close);
@@ -234,7 +235,7 @@ public class TransportBulkAction extends HandledTransportAction<BulkRequest, Bul
                 || request.versionType() == VersionType.EXTERNAL_GTE)
             .collect(Collectors.toMap(DocWriteRequest::index, DocWriteRequest::isRequireAlias, (v1, v2) -> v1 || v2));
 
-        // Step 2: filter the list of indices to find those that don't currently exist.
+        // Step 2:     filter the list of indices to find those that don't currently exist.
         // 从找到的indices中，看看哪些还没index还没创建
         final Map<String, IndexNotFoundException> indicesThatCannotBeCreated = new HashMap<>();
         Set<String> autoCreateIndices = new HashSet<>();
@@ -692,6 +693,7 @@ public class TransportBulkAction extends HandledTransportAction<BulkRequest, Bul
             final AtomicArray<BulkItemResponse> responses, Map<String, IndexNotFoundException> indicesThatCannotBeCreated) {
         /**
          * 把执行任务包装1个BulkOperation进行执行
+         * @see BulkOperation#doRun()
          */
         new BulkOperation(task, bulkRequest, listener, responses, startTimeNanos, indicesThatCannotBeCreated).run();
     }

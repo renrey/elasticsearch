@@ -86,7 +86,7 @@ public interface Rewriteable<T> {
             for (T rewrittenBuilder = builder.rewrite(context); rewrittenBuilder != builder;
                  rewrittenBuilder = builder.rewrite(context)) {
                 builder = rewrittenBuilder;
-                // 最多循环16次
+                // 重写请求最多循环16次
                 if (iteration++ >= MAX_REWRITE_ROUNDS) {
                     // this is some protection against user provided queries if they don't obey the contract of rewrite we allow 16 rounds
                     // and then we fail to prevent infinite loops
@@ -101,6 +101,7 @@ public interface Rewriteable<T> {
                     return;
                 }
             }
+            // 实际执行重写、发送请求
             rewriteResponse.onResponse(builder);
         } catch (IOException|IllegalArgumentException|ParsingException ex) {
             rewriteResponse.onFailure(ex);

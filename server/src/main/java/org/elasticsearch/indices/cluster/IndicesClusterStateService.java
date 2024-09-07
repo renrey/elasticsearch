@@ -225,8 +225,10 @@ public class IndicesClusterStateService extends AbstractLifecycleComponent imple
 
         updateIndices(event); // can also fail shards, but these are then guaranteed to be in failedShardsCache
 
+        // 执行 本地index对象创建操作
         createIndices(state);
 
+        // 创建 本地shard对象
         createOrUpdateShards(state);
     }
 
@@ -443,15 +445,20 @@ public class IndicesClusterStateService extends AbstractLifecycleComponent imple
 
     private void createIndices(final ClusterState state) {
         // we only create indices for shards that are allocated
+
+        // 获取当前本地node的RoutingNode
         RoutingNode localRoutingNode = state.getRoutingNodes().node(state.nodes().getLocalNodeId());
-        if (localRoutingNode == null) {
+        if (localRoutingNode == null) {// 无分配index
             return;
         }
         // create map of indices to create with shards to fail if index creation fails
-        final Map<Index, List<ShardRouting>> indicesToCreate = new HashMap<>();
+        final Map<Index, List<ShardRouting>> indicesToCreate = new HashMap<>();// 大概被分配index
+
+        // 遍历分配的shard
         for (ShardRouting shardRouting : localRoutingNode) {
             if (failedShardsCache.containsKey(shardRouting.shardId()) == false) {
                 final Index index = shardRouting.index();
+                // map没保存（），存到indicesToCreate -》需要创建的
                 if (indicesService.indexService(index) == null) {
                     indicesToCreate.computeIfAbsent(index, k -> new ArrayList<>()).add(shardRouting);
                 }
@@ -465,7 +472,9 @@ public class IndicesClusterStateService extends AbstractLifecycleComponent imple
 
             AllocatedIndex<? extends Shard> indexService = null;
             try {
+                // 核心：创建对应Index（逻辑）的indexService
                 indexService = indicesService.createIndex(indexMetadata, buildInIndexListener, true);
+                // mapping放入？
                 indexService.updateMapping(null, indexMetadata);
             } catch (Exception e) {
                 final String failShardReason;
@@ -551,6 +560,7 @@ public class IndicesClusterStateService extends AbstractLifecycleComponent imple
         assert shardRouting.initializing() : "only allow shard creation for initializing shard but was " + shardRouting;
 
         DiscoveryNode sourceNode = null;
+        // 远程类型恢复
         if (shardRouting.recoverySource().getType() == Type.PEER)  {
             sourceNode = findSourceNodeForPeerRecovery(logger, routingTable, nodes, shardRouting);
             if (sourceNode == null) {
@@ -560,6 +570,7 @@ public class IndicesClusterStateService extends AbstractLifecycleComponent imple
         }
 
         try {
+            // 找到primaryTerm?
             final long primaryTerm = state.metadata().index(shardRouting.index()).primaryTerm(shardRouting.id());
             logger.debug("{} creating shard with primary term [{}]", shardRouting.shardId(), primaryTerm);
             indicesService.createShard(

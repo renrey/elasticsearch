@@ -100,6 +100,7 @@ public class AwarenessAllocationDecider extends AllocationDecider {
     }
 
     private void setForcedAwarenessAttributes(Settings forceSettings) {
+        // cluster.routing.allocation.awareness.force.前缀的配置项
         Map<String, List<String>> forcedAwarenessAttributes = new HashMap<>();
         Map<String, Settings> forceGroups = forceSettings.getAsGroups();
         for (Map.Entry<String, Settings> entry : forceGroups.entrySet()) {
@@ -136,6 +137,7 @@ public class AwarenessAllocationDecider extends AllocationDecider {
             Decision.single(Decision.Type.YES, NAME, "node meets all awareness attribute requirements");
 
     private Decision underCapacity(ShardRouting shardRouting, RoutingNode node, RoutingAllocation allocation, boolean moveToNode) {
+        // 就是配置cluster.routing.allocation.awareness.attributes才会进行相关分配
         if (awarenessAttributes.isEmpty()) {
             return YES_NOT_ENABLED;
         }
@@ -143,18 +145,25 @@ public class AwarenessAllocationDecider extends AllocationDecider {
         final boolean debug = allocation.debugDecision();
         final IndexMetadata indexMetadata = allocation.metadata().getIndexSafe(shardRouting.index());
 
+        // 开启了index.auto_expand_replicas(默认没开启)
         if (INDEX_AUTO_EXPAND_REPLICAS_SETTING.get(indexMetadata.getSettings()).expandToAllNodes()) {
             return YES_AUTO_EXPAND_ALL;
         }
 
+        // 1个组的目标总shard（即mapping配置的副本数+1）
         final int shardCount = indexMetadata.getNumberOfReplicas() + 1; // 1 for primary
+        // 遍历配置的感知属性--- 多个
         for (String awarenessAttribute : awarenessAttributes) {
             // the node the shard exists on must be associated with an awareness attribute
+            // 当前节点的配置中无这个 属性 -> 不分配
             if (node.node().getAttributes().containsKey(awarenessAttribute) == false) {
                 return debug ? debugNoMissingAttribute(awarenessAttribute, awarenessAttributes) : Decision.NO;
             }
+            // 有这个感知属性
 
+            // 从集群中获取已知的这个属性的值
             final Set<String> actualAttributeValues = allocation.routingNodes().getAttributeValues(awarenessAttribute);
+            // 这个node上这个属性值
             final String targetAttributeValue = node.node().getAttributes().get(awarenessAttribute);
             assert targetAttributeValue != null : "attribute [" + awarenessAttribute + "] missing on " + node.node();
             assert actualAttributeValues.contains(targetAttributeValue)
@@ -163,13 +172,16 @@ public class AwarenessAllocationDecider extends AllocationDecider {
             int shardsForTargetAttributeValue = 0;
             // Will be the count of shards on nodes with attribute `awarenessAttribute` matching the one on `node`.
 
+            // 获取当前shard组下所有分配
             for (ShardRouting assignedShard : allocation.routingNodes().assignedShards(shardRouting.shardId())) {
+                // 分配shard启动完成or正在初始化 -》已分配了
                 if (assignedShard.started() || assignedShard.initializing()) {
                     // Note: this also counts relocation targets as that will be the new location of the shard.
                     // Relocation sources should not be counted as the shard is moving away
                     final RoutingNode assignedNode = allocation.routingNodes().node(assignedShard.currentNodeId());
+                    // 就是通过分配shard的node，统计相同感知属性值的shard？
                     if (targetAttributeValue.equals(assignedNode.node().getAttributes().get(awarenessAttribute))) {
-                        shardsForTargetAttributeValue += 1;
+                        shardsForTargetAttributeValue += 1;// 就是已分配shard中有这个属性值的
                     }
                 }
             }
@@ -186,13 +198,18 @@ public class AwarenessAllocationDecider extends AllocationDecider {
                 }
             }
 
+            // cluster.routing.allocation.awareness.force.前缀的配置
             final List<String> forcedValues = forcedAwarenessAttributes.get(awarenessAttribute);
             final int valueCount = forcedValues == null
-                    ? actualAttributeValues.size()
+                    ? actualAttributeValues.size()// 无force属性值使用 普通属性值个数
+                // 等于force跟感知属性值整合一起
                     : Math.toIntExact(Stream.concat(actualAttributeValues.stream(), forcedValues.stream()).distinct().count());
 
+            // 计算每个属性值的 最大分片数？=》1个shard组的shard数+属性值数量-1/ 属性值数
+            // 大概就是每个属性值分配多少个shard
             final int maximumShardsPerAttributeValue = (shardCount + valueCount - 1) / valueCount; // ceil(shardCount/valueCount)
             if (shardsForTargetAttributeValue > maximumShardsPerAttributeValue) {
+                // 当前属性值下在shard组下分配的shard超过最大限制
                 return debug ? debugNoTooManyCopies(
                         shardCount,
                         awarenessAttribute,

@@ -97,22 +97,32 @@ public class FollowersChecker {
                             Consumer<FollowerCheckRequest> handleRequestAndUpdateState,
                             BiConsumer<DiscoveryNode, String> onNodeFailure, NodeHealthService nodeHealthService) {
         this.settings = settings;
-        this.transportService = transportService;
+        this.transportService = transportService;// 通信对象
+        /**
+         * 处理FollowerCheckRequest 发现不是follower执行
+         * @see Coordinator#onFollowerCheckRequest(FollowerCheckRequest)
+         */
         this.handleRequestAndUpdateState = handleRequestAndUpdateState;
         this.onNodeFailure = onNodeFailure;
         this.nodeHealthService = nodeHealthService;
 
-        followerCheckInterval = FOLLOWER_CHECK_INTERVAL_SETTING.get(settings);
-        followerCheckTimeout = FOLLOWER_CHECK_TIMEOUT_SETTING.get(settings);
-        followerCheckRetryCount = FOLLOWER_CHECK_RETRY_COUNT_SETTING.get(settings);
+        followerCheckInterval = FOLLOWER_CHECK_INTERVAL_SETTING.get(settings);// 间隔默认1s
+        followerCheckTimeout = FOLLOWER_CHECK_TIMEOUT_SETTING.get(settings);// 失败探测超时，默认10s
+        followerCheckRetryCount = FOLLOWER_CHECK_RETRY_COUNT_SETTING.get(settings);// 重试次数
 
-        updateFastResponseState(0, Mode.CANDIDATE);
+        // FastResponseState 保存 term、mode
+        updateFastResponseState(0, Mode.CANDIDATE);// 初始0、Candidate
+
+        // /fault_detection/follower_check接口， FollowerCheckRequest
         transportService.registerRequestHandler(FOLLOWER_CHECK_ACTION_NAME, Names.SAME, false, false, FollowerCheckRequest::new,
             (request, transportChannel, task) -> handleFollowerCheck(request, transportChannel));
+
+        // discovery/zen/fd/ping 老的心跳检测 PingRequest
         transportService.registerRequestHandler(
             NodesFaultDetection.PING_ACTION_NAME, Names.SAME, false, false, NodesFaultDetection.PingRequest::new,
             (request, channel, task) -> // TODO: check that we're a follower of the requesting node?
                 channel.sendResponse(new NodesFaultDetection.PingResponse()));
+        // 断开连接时，放入faultyNodes
         transportService.addConnectionListener(new TransportConnectionListener() {
             @Override
             public void onNodeDisconnected(DiscoveryNode node, Transport.Connection connection) {
@@ -135,6 +145,7 @@ public class FollowersChecker {
                     && followerCheckers.containsKey(discoveryNode) == false
                     && faultyNodes.contains(discoveryNode) == false) {
 
+                    // 创建FollowerChecker，并启动
                     final FollowerChecker followerChecker = new FollowerChecker(discoveryNode);
                     followerCheckers.put(discoveryNode, followerChecker);
                     followerChecker.start();
@@ -157,11 +168,13 @@ public class FollowersChecker {
      * FollowersChecker whenever our term or mode changes here.
      */
     public void updateFastResponseState(final long term, final Mode mode) {
+        // 就是本地节点当前的最新term、mode
         fastResponseState = new FastResponseState(term, mode);
     }
 
     private void handleFollowerCheck(FollowerCheckRequest request, TransportChannel transportChannel) throws IOException {
         final StatusInfo statusInfo = nodeHealthService.getHealth();
+        // 节点不健康直接返回异常？
         if (statusInfo.getStatus() == UNHEALTHY) {
             final String message
                 = "handleFollowerCheck: node is unhealthy [" + statusInfo.getInfo() + "], rejecting " + statusInfo.getInfo();
@@ -169,6 +182,7 @@ public class FollowersChecker {
             throw new NodeHealthCheckFailureException(message);
         }
 
+        // 当前认为是follower（必须），且term符合，返回正常
         final FastResponseState responder = this.fastResponseState;
         if (responder.mode == Mode.FOLLOWER && responder.term == request.term) {
             logger.trace("responding to {} on fast path", request);
@@ -176,15 +190,23 @@ public class FollowersChecker {
             return;
         }
 
+        // 是follower，term肯定不能作为本地leader
         if (request.term < responder.term) {
             throw new CoordinationStateRejectedException("rejecting " + request + " since local state is " + this);
         }
 
+        // 对方term 比自己的大-》可作为新leader
+        // 当前是leader -》请求term>=自己的，大于 ->新的leader、等于 -> 拒绝
+        // 当前是Candidate -》正常选举相关
         transportService.getThreadPool().generic().execute(new AbstractRunnable() {
             @Override
             protected void doRun() throws IOException {
                 logger.trace("responding to {} on slow path", request);
                 try {
+                    // 大概需要更新状态？
+                    /**
+                     * @see Coordinator#onFollowerCheckRequest(FollowerCheckRequest)
+                     */
                     handleRequestAndUpdateState.accept(request);
                 } catch (Exception e) {
                     transportChannel.sendResponse(e);
@@ -291,19 +313,24 @@ public class FollowersChecker {
                 return;
             }
 
+            // FollowerCheckRequestQ请求，参数是 本地节点的term、mode -》即本地节点信息
             final FollowerCheckRequest request = new FollowerCheckRequest(fastResponseState.term, transportService.getLocalNode());
             logger.trace("handleWakeUp: checking {} with {}", discoveryNode, request);
 
             final String actionName;
             final TransportRequest transportRequest;
             if (Coordinator.isZen1Node(discoveryNode)) {
+                // 老版本发送ping请求
                 actionName = NodesFaultDetection.PING_ACTION_NAME;
                 transportRequest = new NodesFaultDetection.PingRequest(discoveryNode, ClusterName.CLUSTER_NAME_SETTING.get(settings),
                     transportService.getLocalNode(), ClusterState.UNKNOWN_VERSION);
             } else {
+                // 新版本follower_check
                 actionName = FOLLOWER_CHECK_ACTION_NAME;
                 transportRequest = request;
             }
+
+            // 向follower 发送请求
             transportService.sendRequest(discoveryNode, actionName, transportRequest,
                 TransportRequestOptions.of(followerCheckTimeout, Type.PING),
                 new TransportResponseHandler.Empty() {
@@ -317,6 +344,7 @@ public class FollowersChecker {
 
                         failureCountSinceLastSuccess = 0;
                         logger.trace("{} check successful", FollowerChecker.this);
+                        // 提交下次调度任务 -》1s后
                         scheduleNextWakeUp();
                     }
 
@@ -327,7 +355,7 @@ public class FollowersChecker {
                             return;
                         }
 
-                        failureCountSinceLastSuccess++;
+                        failureCountSinceLastSuccess++;// 统计》
 
                         final String reason;
                         if (exp instanceof ConnectTransportException
@@ -341,11 +369,12 @@ public class FollowersChecker {
                             logger.debug(() -> new ParameterizedMessage("{} failed too many times", FollowerChecker.this), exp);
                             reason = "followers check retry count exceeded";
                         } else {
+                            // 非连接上面的连接方面问题，提交调度
                             logger.debug(() -> new ParameterizedMessage("{} failed, retrying", FollowerChecker.this), exp);
                             scheduleNextWakeUp();
                             return;
                         }
-
+                        // 加入故障faultyNodes，不check了
                         failNode(reason);
                     }
                 });
@@ -364,6 +393,9 @@ public class FollowersChecker {
                         faultyNodes.add(discoveryNode);
                         followerCheckers.remove(discoveryNode);
                     }
+                    /**
+                     * @see Coordinator#removeNode(DiscoveryNode, String)
+                     */
                     onNodeFailure.accept(discoveryNode, reason);
                 }
 

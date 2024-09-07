@@ -43,6 +43,7 @@ public class CopyBytesServerSocketChannel extends NioServerSocketChannel {
         SocketChannel ch = SocketUtils.accept(javaChannel());
 
         try {
+            // 就是创建channel改成CopyBytesSocketChannel
             if (ch != null) {
                 buf.add(new CopyBytesSocketChannel(this, ch));
                 return 1;

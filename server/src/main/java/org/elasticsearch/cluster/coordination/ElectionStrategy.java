@@ -36,6 +36,7 @@ public abstract class ElectionStrategy {
     public final boolean isElectionQuorum(DiscoveryNode localNode, long localCurrentTerm, long localAcceptedTerm, long localAcceptedVersion,
                                           VotingConfiguration lastCommittedConfiguration, VotingConfiguration lastAcceptedConfiguration,
                                           VoteCollection joinVotes) {
+        // joinVotes 需要超过半数的
         return joinVotes.isQuorum(lastCommittedConfiguration) &&
             joinVotes.isQuorum(lastAcceptedConfiguration) &&
             satisfiesAdditionalQuorumConstraints(localNode, localCurrentTerm, localAcceptedTerm, localAcceptedVersion,

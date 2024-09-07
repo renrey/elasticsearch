@@ -130,7 +130,7 @@ public class GatewayMetaState implements Closeable {
         // 需要master节点
         if (DiscoveryNode.isMasterNode(settings) || DiscoveryNode.canContainData(settings)) {
             try {
-                // 加载磁盘中状态
+                // 加载磁盘中状态 _state目录
                 final PersistedClusterStateService.OnDiskState onDiskState = persistedClusterStateService.loadBestOnDiskState();
 
                 Metadata metadata = onDiskState.metadata;
@@ -152,15 +152,18 @@ public class GatewayMetaState implements Closeable {
                 PersistedState persistedState = null;
                 boolean success = false;
                 try {
+                    // 创建ClusterState对象
                     final ClusterState clusterState = prepareInitialClusterState(transportService, clusterService,
                         ClusterState.builder(ClusterName.CLUSTER_NAME_SETTING.get(settings))
                             .version(lastAcceptedVersion)
                             .metadata(upgradeMetadataForNode(metadata, indexMetadataVerifier, metadataUpgrader))
                             .build());
 
+                    // master 候选角色
                     if (DiscoveryNode.isMasterNode(settings)) {
                         persistedState = new LucenePersistedState(persistedClusterStateService, currentTerm, clusterState);
                     } else {
+                        // 非则是异步
                         persistedState = new AsyncLucenePersistedState(settings, transportService.getThreadPool(),
                             new LucenePersistedState(persistedClusterStateService, currentTerm, clusterState));
                     }

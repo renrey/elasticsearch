@@ -368,7 +368,9 @@ public class SearchExecutionContext extends QueryRewriteContext {
     }
 
     private MappedFieldType fieldType(String name) {
+        // 先从runtimeMapping找
         MappedFieldType fieldType = runtimeMappings.get(name);
+        // 没有再从mapping找
         return fieldType == null ? mappingLookup.getFieldType(name) : fieldType;
     }
 

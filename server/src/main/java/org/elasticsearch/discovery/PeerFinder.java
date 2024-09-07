@@ -16,6 +16,7 @@ import org.apache.lucene.util.SetOnce;
 import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.cluster.ClusterName;
 import org.elasticsearch.cluster.ClusterState;
+import org.elasticsearch.cluster.coordination.Coordinator;
 import org.elasticsearch.cluster.coordination.PeersResponse;
 import org.elasticsearch.cluster.node.DiscoveryNode;
 import org.elasticsearch.cluster.node.DiscoveryNodes;
@@ -113,9 +114,11 @@ public abstract class PeerFinder {
             active = true;
             this.lastAcceptedNodes = lastAcceptedNodes;
             leader = Optional.empty();
+            // 新的建立连接、把不可连的删除
             handleWakeUp(); // return value discarded: there are no known peers, so none can be disconnected
         }
 
+        // 这里会检查检测是否 过半数 -》是否进行选举(PREVOTE)
         onFoundPeersUpdated(); // trigger a check for a quorum already
     }
 
@@ -124,7 +127,7 @@ public abstract class PeerFinder {
         synchronized (mutex) {
             logger.trace("deactivating and setting leader to {}", leader);
             active = false;
-            peersRemoved = handleWakeUp();
+            peersRemoved = handleWakeUp();// 等于关闭定时任务
             this.leader = Optional.of(leader);
             assert assertInactiveWithNoKnownPeers();
         }
@@ -151,12 +154,15 @@ public abstract class PeerFinder {
             final List<DiscoveryNode> knownPeers;
             if (active) {
                 assert leader.isPresent() == false : leader;
+                // master角色才会发起请求,并记录
                 if (peersRequest.getSourceNode().isMasterNode()) {
                     startProbe(peersRequest.getSourceNode().getAddress());
                 }
                 peersRequest.getKnownPeers().stream().map(DiscoveryNode::getAddress).forEach(this::startProbe);
+                // 返回已知连接的地址
                 knownPeers = getFoundPeersUnderLock();
             } else {
+                // 不是Candidate，服务中，返回空
                 assert leader.isPresent() || lastAcceptedNodes == null;
                 knownPeers = emptyList();
             }
@@ -246,6 +252,7 @@ public abstract class PeerFinder {
     private boolean handleWakeUp() {
         assert holdsLock() : "PeerFinder mutex not held";
 
+        // 每个peer都执行handleWakeUp-》等于探活，失败的删除
         final boolean peersRemoved = peersByAddress.values().removeIf(Peer::handleWakeUp);
 
         if (active == false) {
@@ -254,10 +261,14 @@ public abstract class PeerFinder {
         }
 
         logger.trace("probing master nodes from cluster state: {}", lastAcceptedNodes);
+        // 最近收到的节点中，作为master角色的node
         for (ObjectCursor<DiscoveryNode> discoveryNodeObjectCursor : lastAcceptedNodes.getMasterNodes().values()) {
+            // 启动探针，发起连接
             startProbe(discoveryNodeObjectCursor.value.getAddress());
         }
 
+        // SeedHostsResolver
+        // 就是seed获取node，也是每个发起连接
         configuredHostsResolver.resolveConfiguredHosts(providedAddresses -> {
             synchronized (mutex) {
                 lastResolvedAddresses = providedAddresses;
@@ -266,6 +277,7 @@ public abstract class PeerFinder {
             }
         });
 
+        // 提交定时任务，定时定时执行handleWakeUp
         transportService.getThreadPool().scheduleUnlessShuttingDown(findPeersInterval, Names.GENERIC, new AbstractRunnable() {
             @Override
             public boolean isForceExecution() {
@@ -281,10 +293,15 @@ public abstract class PeerFinder {
             @Override
             protected void doRun() {
                 synchronized (mutex) {
+                    // 没有删除的
                     if (handleWakeUp() == false) {
                         return;
                     }
                 }
+                // 有删除的
+                /**
+                 * @see Coordinator.CoordinatorPeerFinder#onFoundPeersUpdated()
+                 */
                 onFoundPeersUpdated();
             }
 
@@ -309,6 +326,7 @@ public abstract class PeerFinder {
             return;
         }
 
+        // 保存并建立连接
         peersByAddress.computeIfAbsent(transportAddress, this::createConnectingPeer);
     }
 
@@ -329,6 +347,7 @@ public abstract class PeerFinder {
         boolean handleWakeUp() {
             assert holdsLock() : "PeerFinder mutex not held";
 
+            // 不活跃
             if (active == false) {
                 return true;
             }
@@ -342,6 +361,7 @@ public abstract class PeerFinder {
                         requestPeers();
                     }
                 } else {
+                    // 不能链接
                     logger.trace("{} no longer connected", this);
                     return true;
                 }
@@ -419,11 +439,12 @@ public abstract class PeerFinder {
                         }
 
                         peersRequestInFlight = false;
-
+                        // 对方也是Candidate，才会返回他的KnownPeers
                         response.getMasterNode().map(DiscoveryNode::getAddress).ifPresent(PeerFinder.this::startProbe);
                         response.getKnownPeers().stream().map(DiscoveryNode::getAddress).forEach(PeerFinder.this::startProbe);
                     }
 
+                    // 对方是leader？
                     if (response.getMasterNode().equals(Optional.of(discoveryNode))) {
                         // Must not hold lock here to avoid deadlock
                         assert holdsLock() == false : "PeerFinder mutex is held in error";
@@ -464,6 +485,7 @@ public abstract class PeerFinder {
                     return new PeersResponse(optionalMasterNode, discoveredNodes, 0L);
                 }, UnicastZenPing.UnicastPingResponse::new);
             } else {
+                // internal:discovery/request_peers
                 actionName = REQUEST_PEERS_ACTION_NAME;
                 transportRequest = new PeersRequest(getLocalNode(), knownNodes);
                 transportResponseHandler = peersResponseHandler;

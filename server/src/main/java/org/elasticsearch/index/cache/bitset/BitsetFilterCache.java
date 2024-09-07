@@ -33,6 +33,7 @@ import org.elasticsearch.common.settings.Setting;
 import org.elasticsearch.common.settings.Setting.Property;
 import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.index.AbstractIndexComponent;
+import org.elasticsearch.index.IndexService;
 import org.elasticsearch.index.IndexSettings;
 import org.elasticsearch.index.IndexWarmer;
 import org.elasticsearch.index.IndexWarmer.TerminationHandle;
@@ -83,12 +84,13 @@ public final class BitsetFilterCache extends AbstractIndexComponent
     public static BitSet bitsetFromQuery(Query query, LeafReaderContext context) throws IOException {
         final IndexReaderContext topLevelContext = ReaderUtil.getTopLevelContext(context);
         final IndexSearcher searcher = new IndexSearcher(topLevelContext);
-        searcher.setQueryCache(null);
+        searcher.setQueryCache(null);// 无query缓存
         final Weight weight = searcher.createWeight(searcher.rewrite(query), ScoreMode.COMPLETE_NO_SCORES, 1f);
         Scorer s = weight.scorer(context);
         if (s == null) {
             return null;
         } else {
+            // 结果位图
             return BitSet.of(s.iterator(), context.reader().maxDoc());
         }
     }
@@ -118,11 +120,12 @@ public final class BitsetFilterCache extends AbstractIndexComponent
     }
 
     private BitSet getAndLoadIfNotPresent(final Query query, final LeafReaderContext context) throws ExecutionException {
+        // 实际是lucene CacheHelper
         final IndexReader.CacheHelper cacheHelper = context.reader().getCoreCacheHelper();
         if (cacheHelper == null) {
             throw new IllegalArgumentException("Reader " + context.reader() + " does not support caching");
         }
-        final IndexReader.CacheKey coreCacheReader = cacheHelper.getKey();
+        final IndexReader.CacheKey coreCacheReader = cacheHelper.getKey();// 就是单纯对象。。 -》等于为当前leaf（segment）上下文一个id
         final ShardId shardId = ShardUtils.extractShardId(context.reader());
         if (shardId == null) {
             throw new IllegalStateException("Null shardId. If you got here from a test, you need to wrap the directory reader. " +
@@ -133,16 +136,28 @@ public final class BitsetFilterCache extends AbstractIndexComponent
             throw new IllegalStateException("Trying to load bit set for index " + shardId.getIndex()
                     + " with cache of index " + indexSettings.getIndex());
         }
+        // 等于为这个coreCacheReader 放入到loadedFilters
         Cache<Query, Value> filterToFbs = loadedFilters.computeIfAbsent(coreCacheReader, key -> {
+            /**
+             * 关闭的回调
+             * @see BitsetFilterCache#onClose(IndexReader.CacheKey)
+             */
             cacheHelper.addClosedListener(BitsetFilterCache.this);
             return CacheBuilder.<Query, Value>builder().build();
         });
 
+        // coreCacheReader 生成当前query缓存(就是hashtable)
         return filterToFbs.computeIfAbsent(query, key -> {
+            // 缓存值！！！执行query，生成结果位图（只是docId）
             final BitSet bitSet = bitsetFromQuery(query, context);
             Value value = new Value(bitSet, shardId);
+            /**
+             * @see IndexService.BitsetCacheListener#onCache(ShardId, Accountable)
+             * 真正的只放shardId跟bitset -》实际只是本地shardId 累加 统计指标
+             * 核心缓存还是filterToFbs
+             */
             listener.onCache(shardId, value.bitset);
-            return value;
+            return value;// filterToFbs中缓存
         }).bitset;
     }
 
@@ -231,7 +246,9 @@ public final class BitsetFilterCache extends AbstractIndexComponent
             final MapperService mapperService = indexShard.mapperService();
             MappingLookup lookup = mapperService.mappingLookup();
             if (lookup.hasNested()) {
+                // 主要做存在_primary_term字段的查询
                 warmUp.add(Queries.newNonNestedFilter(indexSettings.getIndexVersionCreated()));
+                // 内嵌对象类型
                 lookup.getNestedParentMappers().stream().map(ObjectMapper::nestedTypeFilter).forEach(warmUp::add);
             }
 
@@ -241,6 +258,7 @@ public final class BitsetFilterCache extends AbstractIndexComponent
                     executor.execute(() -> {
                         try {
                             final long start = System.nanoTime();
+                            // 执行
                             getAndLoadIfNotPresent(filterToWarm, ctx);
                             if (indexShard.warmerService().logger().isTraceEnabled()) {
                                 indexShard.warmerService().logger().trace("warmed bitset for [{}], took [{}]",

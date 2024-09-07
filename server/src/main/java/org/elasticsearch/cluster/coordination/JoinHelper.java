@@ -102,6 +102,7 @@ public class JoinHelper {
 
             private final long term = currentTermSupplier.getAsLong();
 
+            // 重写了execute
             @Override
             public ClusterTasksResult<JoinTaskExecutor.Task> execute(ClusterState currentState, List<JoinTaskExecutor.Task> joiningTasks)
                 throws Exception {
@@ -112,6 +113,7 @@ public class JoinHelper {
                     logger.trace("encountered higher term {} than current {}, there is a newer master", currentState.term(), term);
                     throw new NotMasterException("Higher term encountered (current: " + currentState.term() + " > used: " +
                         term + "), there is a newer master");
+                // 本地没有leader ，有isBecomeMasterTask，直接更新成这个
                 } else if (currentState.nodes().getMasterNodeId() == null && joiningTasks.stream().anyMatch(Task::isBecomeMasterTask)) {
                     assert currentState.term() < term : "there should be at most one become master task per election (= by term)";
                     final CoordinationMetadata coordinationMetadata =
@@ -126,6 +128,10 @@ public class JoinHelper {
 
         };
 
+        // join request 处理
+        /**
+         * @see Coordinator#handleJoinRequest(JoinRequest, JoinCallback)
+         */
         transportService.registerRequestHandler(JOIN_ACTION_NAME, ThreadPool.Names.GENERIC, false, false, JoinRequest::new,
             (request, channel, task) -> joinHandler.accept(request, transportJoinCallback(request, channel)));
 
@@ -135,12 +141,18 @@ public class JoinHelper {
                 joinHandler.accept(new JoinRequest(request.getNode(), 0L, Optional.empty()), // treat as non-voting join
                 transportJoinCallback(request, channel)));
 
+        // start_join handler
         transportService.registerRequestHandler(START_JOIN_ACTION_NAME, Names.GENERIC, false, false,
             StartJoinRequest::new,
             (request, channel, task) -> {
-                final DiscoveryNode destination = request.getSourceNode();
+                final DiscoveryNode destination = request.getSourceNode();// 选择的master node
+                // 先执行joinLeaderInTerm，处理req
+                /**
+                 * @see Coordinator#joinLeaderInTerm(StartJoinRequest)
+                 */
+                // 没问题 -》当前本地已变成那个新term，即当前节点选择 对方作为master，向对方发送 JoinRequest
                 sendJoinRequest(destination, currentTermSupplier.getAsLong(), Optional.of(joinLeaderInTerm.apply(request)));
-                channel.sendResponse(Empty.INSTANCE);
+                channel.sendResponse(Empty.INSTANCE);// 马上发送空对象，代表收到了
             });
 
         final List<String> dataPaths = Environment.PATH_DATA_SETTING.get(settings);
@@ -285,8 +297,10 @@ public class JoinHelper {
             logger.debug("dropping join request to [{}]: [{}]", destination, statusInfo.getInfo());
             return;
         }
+
+        // 新建JoinRequest，sourceNode=当前节点
         final JoinRequest joinRequest = new JoinRequest(transportService.getLocalNode(), term, optionalJoin);
-        final Tuple<DiscoveryNode, JoinRequest> dedupKey = Tuple.tuple(destination, joinRequest);
+        final Tuple<DiscoveryNode, JoinRequest> dedupKey = Tuple.tuple(destination, joinRequest);// start join收到的node，与当前node
         if (pendingOutgoingJoins.add(dedupKey)) {
             logger.debug("attempting to join {} with {}", destination, joinRequest);
             final String actionName;
@@ -301,11 +315,12 @@ public class JoinHelper {
                 transportRequest = joinRequest;
                 transportRequestOptions = TransportRequestOptions.EMPTY;
             }
+            // 像start join node1发送请求 /coordination/join
             transportService.sendRequest(destination, actionName, transportRequest, transportRequestOptions,
                 new TransportResponseHandler.Empty() {
                     @Override
                     public void handleResponse(TransportResponse.Empty response) {
-                        pendingOutgoingJoins.remove(dedupKey);
+                        pendingOutgoingJoins.remove(dedupKey);// 移除正在等待
                         logger.debug("successfully joined {} with {}", destination, joinRequest);
                         lastFailedJoinAttempt.set(null);
                         onCompletion.run();
@@ -329,9 +344,15 @@ public class JoinHelper {
     public void sendStartJoinRequest(final StartJoinRequest startJoinRequest, final DiscoveryNode destination) {
         assert startJoinRequest.getSourceNode().isMasterNode()
             : "sending start-join request for master-ineligible " + startJoinRequest.getSourceNode();
+        // cluster/coordination/start_join
+
+        /**
+         * @see
+         */
         transportService.sendRequest(destination, START_JOIN_ACTION_NAME, startJoinRequest, new TransportResponseHandler.Empty() {
                 @Override
                 public void handleResponse(TransportResponse.Empty response) {
+                    // 无其他处理
                     logger.debug("successful response to {} from {}", startJoinRequest, destination);
                 }
 
@@ -396,6 +417,7 @@ public class JoinHelper {
         public void handleJoinRequest(DiscoveryNode sender, JoinCallback joinCallback) {
             final JoinTaskExecutor.Task task = new JoinTaskExecutor.Task(sender, "join existing leader");
             assert joinTaskExecutor != null;
+            // 新的join集群
             masterService.submitStateUpdateTask("node-join", task, ClusterStateTaskConfig.build(Priority.URGENT),
                 joinTaskExecutor, new JoinTaskListener(task, joinCallback));
         }
@@ -451,23 +473,31 @@ public class JoinHelper {
             closed = true;
             if (newMode == Mode.LEADER) {
                 final Map<JoinTaskExecutor.Task, ClusterStateTaskListener> pendingAsTasks = new LinkedHashMap<>();
+
+                // 等于对每个node都生成join task
                 joinRequestAccumulator.forEach((key, value) -> {
                     final JoinTaskExecutor.Task task = new JoinTaskExecutor.Task(key, "elect leader");
-                    pendingAsTasks.put(task, new JoinTaskListener(task, value));
+                    pendingAsTasks.put(task, new JoinTaskListener(task, value));// 回调就是返回join请求响应
                 });
 
+                // 集群状态变更操作：elected-as-master被选中master ，多少join节点
                 final String stateUpdateSource = "elected-as-master ([" + pendingAsTasks.size() + "] nodes joined)";
 
+                // 在生成newBecomeMasterTask （成为master）、newFinishElectionTask（完成选举）
                 pendingAsTasks.put(JoinTaskExecutor.newBecomeMasterTask(), (source, e) -> {
                 });
                 pendingAsTasks.put(JoinTaskExecutor.newFinishElectionTask(), (source, e) -> {
                 });
                 joinTaskExecutor = joinTaskExecutorGenerator.get();
+
+                // 提交更新任务到masterService
                 masterService.submitStateUpdateTasks(stateUpdateSource, pendingAsTasks, ClusterStateTaskConfig.build(Priority.URGENT),
                     joinTaskExecutor);
             } else {
+                // 必须是FOLLOWER -》即选自己为主失败
                 assert newMode == Mode.FOLLOWER : newMode;
                 joinTaskExecutor = null;
+                // 每个等待的join request都失败，代表当前节点已成follower
                 joinRequestAccumulator.values().forEach(joinCallback -> joinCallback.onFailure(
                     new CoordinationStateRejectedException("became follower")));
             }

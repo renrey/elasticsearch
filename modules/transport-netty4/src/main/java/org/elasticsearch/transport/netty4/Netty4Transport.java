@@ -92,6 +92,8 @@ public class Netty4Transport extends TcpTransport {
     public Netty4Transport(Settings settings, Version version, ThreadPool threadPool, NetworkService networkService,
                            PageCacheRecycler pageCacheRecycler, NamedWriteableRegistry namedWriteableRegistry,
                            CircuitBreakerService circuitBreakerService, SharedGroupFactory sharedGroupFactory) {
+
+        // 关键内部实现！！！
         super(settings, version, threadPool, pageCacheRecycler, circuitBreakerService, namedWriteableRegistry, networkService);
         Netty4Utils.setAvailableProcessors(EsExecutors.NODE_PROCESSORS_SETTING.get(settings));
         NettyAllocator.logAllocatorDescriptionIfNeeded();
@@ -110,6 +112,7 @@ public class Netty4Transport extends TcpTransport {
 
     @Override
     protected void doStart() {
+        // 内部tcp通信
         boolean success = false;
         try {
             // 1. 创建并封装EventLoopGroup(NioEventLoopGroup)
@@ -134,11 +137,11 @@ public class Netty4Transport extends TcpTransport {
 
     private Bootstrap createClientBootstrap(SharedGroupFactory.SharedGroup sharedGroup) {
         final Bootstrap bootstrap = new Bootstrap();
-        bootstrap.group(sharedGroup.getLowLevelGroup()); // 绑定EventLoopGroup
+        bootstrap.group(sharedGroup.getLowLevelGroup()); // 绑定EventLoopGroup:NioEventLoopGroup
 
         // NettyAllocator will return the channel type designed to work with the configured allocator
         assert Netty4NioSocketChannel.class.isAssignableFrom(NettyAllocator.getChannelType());
-        bootstrap.channel(NettyAllocator.getChannelType());
+        bootstrap.channel(NettyAllocator.getChannelType());// CopyBytesSocketChannel
         bootstrap.option(ChannelOption.ALLOCATOR, NettyAllocator.getAllocator());
 
         bootstrap.option(ChannelOption.TCP_NODELAY, TransportSettings.TCP_NO_DELAY.get(settings));
@@ -196,13 +199,15 @@ public class Netty4Transport extends TcpTransport {
         serverBootstrap.group(sharedGroup.getLowLevelGroup());
 
         // NettyAllocator will return the channel type designed to work with the configuredAllocator
-        serverBootstrap.channel(NettyAllocator.getServerChannelType());
+        serverBootstrap.channel(NettyAllocator.getServerChannelType());// CopyBytesServerSocketChannel
 
         // Set the allocators for both the server channel and the child channels created
         serverBootstrap.option(ChannelOption.ALLOCATOR, NettyAllocator.getAllocator());
         serverBootstrap.childOption(ChannelOption.ALLOCATOR, NettyAllocator.getAllocator());
 
+        // 子socketchannel handler链初始化
         serverBootstrap.childHandler(getServerChannelInitializer(name));
+        // 主el 监听出现异常的handler
         serverBootstrap.handler(new ServerChannelExceptionHandler());
 
         serverBootstrap.childOption(ChannelOption.TCP_NODELAY, profileSettings.tcpNoDelay);
@@ -330,11 +335,17 @@ public class Netty4Transport extends TcpTransport {
             addClosedExceptionLogger(ch);
             assert ch instanceof Netty4NioSocketChannel;
             NetUtils.tryEnsureReasonableKeepAliveConfig(((Netty4NioSocketChannel) ch).javaChannel());
+            // 创建es es channel。 ch.newSucceededFuture()是连接完成的
             Netty4TcpChannel nettyTcpChannel = new Netty4TcpChannel(ch, true, name, ch.newSucceededFuture());
-            ch.attr(CHANNEL_KEY).set(nettyTcpChannel);
-            ch.pipeline().addLast("byte_buf_sizer", sizer);
-            ch.pipeline().addLast("logging", new ESLoggingHandler());
+            ch.attr(CHANNEL_KEY).set(nettyTcpChannel);// 绑定es channel
+
+            // pipeline链
+            ch.pipeline().addLast("byte_buf_sizer", sizer);// 解析
+            ch.pipeline().addLast("logging", new ESLoggingHandler());// 打印
+            // 转发请求处理：等于把transport的requestHandler绑定到处理handler
             ch.pipeline().addLast("dispatcher", new Netty4MessageChannelHandler(pageCacheRecycler, Netty4Transport.this));
+
+            // 加入到acceptedChannels
             serverAcceptedChannel(nettyTcpChannel);
         }
 

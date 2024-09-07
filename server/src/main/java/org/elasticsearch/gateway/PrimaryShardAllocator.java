@@ -83,6 +83,7 @@ public abstract class PrimaryShardAllocator extends BaseGatewayShardAllocator {
             return AllocateUnassignedDecision.no(UnassignedInfo.AllocationStatus.FETCHING_SHARD_DATA, nodeDecisions);
         }
 
+        // 从所有node获取指定shard组
         final FetchResult<NodeGatewayStartedShards> shardState = fetchData(unassignedShard, allocation);
         if (shardState.hasData() == false) {
             allocation.setHasPendingAsyncFetch();
@@ -96,11 +97,14 @@ public abstract class PrimaryShardAllocator extends BaseGatewayShardAllocator {
         // don't create a new IndexSetting object for every shard as this could cause a lot of garbage
         // on cluster restart if we allocate a boat load of shards
         final IndexMetadata indexMetadata = allocation.metadata().getIndexSafe(unassignedShard.index());
+        // 获取 index下 目标shard组的inSyncAllocationIds
         final Set<String> inSyncAllocationIds = indexMetadata.inSyncAllocationIds(unassignedShard.id());
         final boolean snapshotRestore = unassignedShard.recoverySource().getType() == RecoverySource.Type.SNAPSHOT;
 
         assert inSyncAllocationIds.isEmpty() == false;
         // use in-sync allocation ids to select nodes
+
+        // 大概候选节点，必须经过Allocation把shard分配给这个node才行
         final NodeShardsResult nodeShardsResult = buildNodeShardsResult(unassignedShard, snapshotRestore,
             allocation.getIgnoreNodes(unassignedShard.shardId()), inSyncAllocationIds, shardState, logger);
         final boolean enoughAllocationsFound = nodeShardsResult.orderedAllocationCandidates.size() > 0;
@@ -124,6 +128,7 @@ public abstract class PrimaryShardAllocator extends BaseGatewayShardAllocator {
             }
         }
 
+        // 核心：遍历所有node，查看当前node是否可分配到这个node -》分配感知、相同组shard不重复分配、空闲判断
         NodesToAllocate nodesToAllocate = buildNodesToAllocate(
             allocation, nodeShardsResult.orderedAllocationCandidates, unassignedShard, false
         );
@@ -131,14 +136,20 @@ public abstract class PrimaryShardAllocator extends BaseGatewayShardAllocator {
         String allocationId = null;
         boolean throttled = false;
         if (nodesToAllocate.yesNodeShards.isEmpty() == false) {
+            // 代表当前node有接收这个shard进行分配的
+            // 这里应该是正常情况进入
             DecidedNode decidedNode = nodesToAllocate.yesNodeShards.get(0);
             logger.debug("[{}][{}]: allocating [{}] to [{}] on primary allocation",
                          unassignedShard.index(), unassignedShard.id(), unassignedShard, decidedNode.nodeShardState.getNode());
+            // 分配的node就是yesNodeShards的顺序第一個
             node = decidedNode.nodeShardState.getNode();
             allocationId = decidedNode.nodeShardState.allocationId();
         } else if (nodesToAllocate.throttleNodeShards.isEmpty() && nodesToAllocate.noNodeShards.isEmpty() == false) {
             // The deciders returned a NO decision for all nodes with shard copies, so we check if primary shard
             // can be force-allocated to one of the nodes.
+            // 没限流的，只是全都认为不能分配
+
+            // 执行force判断，主分片才有用
             nodesToAllocate = buildNodesToAllocate(allocation, nodeShardsResult.orderedAllocationCandidates, unassignedShard, true);
             if (nodesToAllocate.yesNodeShards.isEmpty() == false) {
                 final DecidedNode decidedNode = nodesToAllocate.yesNodeShards.get(0);
@@ -148,6 +159,7 @@ public abstract class PrimaryShardAllocator extends BaseGatewayShardAllocator {
                 node = nodeShardState.getNode();
                 allocationId = nodeShardState.allocationId();
             } else if (nodesToAllocate.throttleNodeShards.isEmpty() == false) {
+
                 logger.debug("[{}][{}]: throttling allocation [{}] to [{}] on forced primary allocation",
                              unassignedShard.index(), unassignedShard.id(), unassignedShard, nodesToAllocate.throttleNodeShards);
                 throttled = true;
@@ -156,6 +168,8 @@ public abstract class PrimaryShardAllocator extends BaseGatewayShardAllocator {
                              unassignedShard.index(), unassignedShard.id(), unassignedShard);
             }
         } else {
+            // 这里没有分配no的，全都被限流了
+
             // we are throttling this, since we are allowed to allocate to this node but there are enough allocations
             // taking place on the node currently, ignore it for now
             logger.debug("[{}][{}]: throttling allocation [{}] to [{}] on primary allocation",
@@ -170,6 +184,7 @@ public abstract class PrimaryShardAllocator extends BaseGatewayShardAllocator {
         if (allocation.hasPendingAsyncFetch()) {
             return AllocateUnassignedDecision.no(AllocationStatus.FETCHING_SHARD_DATA, nodeResults);
         } else if (node != null) {
+            // 正常分配成功 -》有node
             return AllocateUnassignedDecision.yes(node, allocationId, nodeResults, false);
         } else if (throttled) {
             return AllocateUnassignedDecision.throttle(nodeResults);
@@ -234,6 +249,7 @@ public abstract class PrimaryShardAllocator extends BaseGatewayShardAllocator {
                                                             Logger logger) {
         List<NodeGatewayStartedShards> nodeShardStates = new ArrayList<>();
         int numberOfAllocationsFound = 0;
+        // 遍历所有node
         for (NodeGatewayStartedShards nodeShardState : shardState.getData().values()) {
             DiscoveryNode node = nodeShardState.getNode();
             String allocationId = nodeShardState.allocationId();
@@ -262,12 +278,15 @@ public abstract class PrimaryShardAllocator extends BaseGatewayShardAllocator {
                 }
             }
 
+            // 已发生分配
             if (allocationId != null) {
                 assert nodeShardState.storeException() == null ||
                     nodeShardState.storeException() instanceof ShardLockObtainFailedException :
                     "only allow store that can be opened or that throws a ShardLockObtainFailedException while being opened but got a " +
                         "store throwing " + nodeShardState.storeException();
                 numberOfAllocationsFound++;
+                // 快照恢复中，直接
+                // 不然判断inSyncAllocationIds
                 if (matchAnyShard || inSyncAllocationIds.contains(nodeShardState.allocationId())) {
                     nodeShardStates.add(nodeShardState);
                 }
@@ -275,22 +294,25 @@ public abstract class PrimaryShardAllocator extends BaseGatewayShardAllocator {
         }
 
         final Comparator<NodeGatewayStartedShards> comparator; // allocation preference
-        if (matchAnyShard) {
+        if (matchAnyShard) {// 快照使用
             // prefer shards with matching allocation ids
             Comparator<NodeGatewayStartedShards> matchingAllocationsFirst = Comparator.comparing(
                 (NodeGatewayStartedShards state) -> inSyncAllocationIds.contains(state.allocationId())).reversed();
             comparator = matchingAllocationsFirst.thenComparing(NO_STORE_EXCEPTION_FIRST_COMPARATOR)
                 .thenComparing(PRIMARY_FIRST_COMPARATOR);
         } else {
+            // 大概是按primary排序
             comparator = NO_STORE_EXCEPTION_FIRST_COMPARATOR.thenComparing(PRIMARY_FIRST_COMPARATOR);
         }
 
+        // 排序
         nodeShardStates.sort(comparator);
 
         if (logger.isTraceEnabled()) {
             logger.trace("{} candidates for allocation: {}", shard, nodeShardStates.stream().map(s -> s.getNode().getName())
                 .collect(Collectors.joining(", ")));
         }
+        // nodeShardStates ->orderedAllocationCandidates ，已排序的分配候选节点
         return new NodeShardsResult(nodeShardStates, numberOfAllocationsFound);
     }
 
@@ -304,12 +326,15 @@ public abstract class PrimaryShardAllocator extends BaseGatewayShardAllocator {
         List<DecidedNode> yesNodeShards = new ArrayList<>();
         List<DecidedNode> throttledNodeShards = new ArrayList<>();
         List<DecidedNode> noNodeShards = new ArrayList<>();
+        // 应该是遍历每个node情况
         for (NodeGatewayStartedShards nodeShardState : nodeShardStates) {
             RoutingNode node = allocation.routingNodes().node(nodeShardState.getNode().getId());
             if (node == null) {
                 continue;
             }
 
+            // 1次分配中前面1次进入应该是false，后1次就是true
+            // 就是判断当前node是否可分配当前shard
             Decision decision = forceAllocate ? allocation.deciders().canForceAllocatePrimary(shardRouting, node, allocation) :
                                                 allocation.deciders().canAllocate(shardRouting, node, allocation);
             DecidedNode decidedNode = new DecidedNode(nodeShardState, decision);
@@ -318,6 +343,7 @@ public abstract class PrimaryShardAllocator extends BaseGatewayShardAllocator {
             } else if (decision.type() == Type.NO) {
                 noNodeShards.add(decidedNode);
             } else {
+                // 代表当前shard可分配在当前node
                 yesNodeShards.add(decidedNode);
             }
         }

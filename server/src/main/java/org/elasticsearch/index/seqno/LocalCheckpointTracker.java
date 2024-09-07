@@ -69,7 +69,7 @@ public class LocalCheckpointTracker {
             throw new IllegalArgumentException(
                 "max seq. no. must be non-negative or [" + SequenceNumbers.NO_OPS_PERFORMED + "] but was [" + maxSeqNo + "]");
         }
-        nextSeqNo.set(maxSeqNo + 1);
+        nextSeqNo.set(maxSeqNo + 1);// 序号生成开始
         processedCheckpoint.set(localCheckpoint);
         persistedCheckpoint.set(localCheckpoint);
     }

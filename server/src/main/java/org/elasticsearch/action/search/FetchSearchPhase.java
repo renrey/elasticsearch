@@ -75,6 +75,8 @@ final class FetchSearchPhase extends SearchPhase {
 
     @Override
     public void run() {
+        // 提交给当前action的线程池异步执行
+        // 即search线程池！！！
         context.execute(new AbstractRunnable() {
             @Override
             protected void doRun() throws Exception {
@@ -104,17 +106,21 @@ final class FetchSearchPhase extends SearchPhase {
         // 结果只有1个shard的结果可以优化
         final boolean queryAndFetchOptimization = queryResults.length() == 1;
         /**
-         * 完成后所有shard的fetch后，执行
+         * 完成后所有shard的fetch请求后，执行
          */
         final Runnable finishPhase = ()
             -> moveToNextPhase(searchPhaseController, queryResults, reducedQueryPhase, queryAndFetchOptimization ?
             queryResults : fetchResults.getAtomicArray());
+
+        // 只有1个shard结果直接优化 -》无须重排？
         if (queryAndFetchOptimization) {
             assert phaseResults.isEmpty() || phaseResults.get(0).fetchResult() != null : "phaseResults empty [" + phaseResults.isEmpty()
                 + "], single result: " +  phaseResults.get(0).fetchResult();
             // query AND fetch optimization
-            finishPhase.run();
+            finishPhase.run();// 完成fetch
         } else {
+            // 正常执行
+
             ScoreDoc[] scoreDocs = reducedQueryPhase.sortedTopDocs.scoreDocs;
             // shard数组，每个元素是对应的docid数组
             final IntArrayList[] docIdsToLoad = searchPhaseController.fillDocIdsToLoad(numShards, scoreDocs);
@@ -136,12 +142,13 @@ final class FetchSearchPhase extends SearchPhase {
                 final CountedCollector<FetchSearchResult> counter = new CountedCollector<>(fetchResults,
                     docIdsToLoad.length, // we count down every shard in the result no matter if we got any results or not
                     finishPhase, context);
-                // 遍历分片
+                // 遍历分片（组）
                 for (int i = 0; i < docIdsToLoad.length; i++) {
                     // 分片信息
                     IntArrayList entry = docIdsToLoad[i];
                     SearchPhaseResult queryResult = queryResults.get(i);
                     if (entry == null) { // no results for this shard ID
+                        // 本shard无保存需要的docid的
                         if (queryResult != null) {
                             // if we got some hits from this shard we have to release the context there
                             // we do this as we go since it will free up resources and passing on the request on the
@@ -153,6 +160,8 @@ final class FetchSearchPhase extends SearchPhase {
                         counter.countDown();
                     } else {
                         // 正常
+
+                        // 注意的是：fetch请求实际是向第一阶段query时 对应shard请求且返回的节点发送的，不会再路由负载均衡
                         SearchShardTarget searchShardTarget = queryResult.getSearchShardTarget();
                         Transport.Connection connection = context.getConnection(searchShardTarget.getClusterAlias(),
                             searchShardTarget.getNodeId());
@@ -247,7 +256,7 @@ final class FetchSearchPhase extends SearchPhase {
          * 下个阶段nextPhaseFactory.apply
          *
          * @see FetchSearchPhase#FetchSearchPhase(SearchPhaseResults, SearchPhaseController, AggregatedDfs, SearchPhaseContext) 中lambda
-         *
+         * 下阶段ExpandSearchPhase
          * 实际执行-》就是发送响应
          * @see ExpandSearchPhase#run()
          */

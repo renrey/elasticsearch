@@ -200,9 +200,9 @@ abstract class TopDocsCollectorContext extends QueryCollectorContext {
 
         private static TopDocsCollector<?> createCollector(@Nullable SortAndFormats sortAndFormats, int numHits,
                 @Nullable ScoreDoc searchAfter, int hitCountThreshold) {
-            if (sortAndFormats == null) {
+            if (sortAndFormats == null) {// 默认
                 return TopScoreDocCollector.create(numHits, searchAfter, hitCountThreshold);
-            } else {
+            } else {// 指定了sort字段
                 return TopFieldCollector.create(sortAndFormats.sort, numHits, (FieldDoc) searchAfter, hitCountThreshold);
             }
         }
@@ -237,12 +237,15 @@ abstract class TopDocsCollectorContext extends QueryCollectorContext {
 
             final TopDocsCollector<?> topDocsCollector;
 
+            // 没有指定sort-》默认相关度，或者第一个用_score
             if ((sortAndFormats == null || SortField.FIELD_SCORE.equals(sortAndFormats.sort.getSort()[0]))
                     && hasInfMaxScore(query)) {
                 // disable max score optimization since we have a mandatory clause
                 // that doesn't track the maximum score
+
+                // 普通：SimpleTopScoreDocCollector searchafter：PagingTopScoreDocCollector
                 topDocsCollector = createCollector(sortAndFormats, numHits, searchAfter, Integer.MAX_VALUE);
-                topDocsSupplier = new CachedSupplier<>(topDocsCollector::topDocs);
+                topDocsSupplier = new CachedSupplier<>(topDocsCollector::topDocs);// 先缓存结果对象？
                 totalHitsSupplier = () -> topDocsSupplier.get().totalHits;
             } else if (trackTotalHitsUpTo == SearchContext.TRACK_TOTAL_HITS_DISABLED) {
                 // don't compute hit counts via the collector
@@ -264,7 +267,7 @@ abstract class TopDocsCollectorContext extends QueryCollectorContext {
                 }
             }
             MaxScoreCollector maxScoreCollector = null;
-            if (sortAndFormats == null) {
+            if (sortAndFormats == null) {// 没有指定sort
                 maxScoreSupplier = () -> {
                     TopDocs topDocs = topDocsSupplier.get();
                     if (topDocs.scoreDocs.length == 0) {
@@ -276,10 +279,11 @@ abstract class TopDocsCollectorContext extends QueryCollectorContext {
             } else if (trackMaxScore) {
                 maxScoreCollector = new MaxScoreCollector();
                 maxScoreSupplier = maxScoreCollector::getMaxScore;
-            } else {
+            } else {// 指定sort，不在lucene做排序？
                 maxScoreSupplier = () -> Float.NaN;
             }
 
+            // 2个collector
             this.collector = MultiCollector.wrap(topDocsCollector, maxScoreCollector);
 
         }
@@ -419,11 +423,11 @@ abstract class TopDocsCollectorContext extends QueryCollectorContext {
         final Query query = searchContext.query();
         // top collectors don't like a size of 0
         final int totalNumDocs = Math.max(1, reader.numDocs());
-        if (searchContext.size() == 0) {
+        if (searchContext.size() == 0) {// size=0，即无结果返回查询
             // no matter what the value of from is
             return new EmptyTopDocsCollectorContext(reader, query, searchContext.sort(),
                 searchContext.trackTotalHitsUpTo(), hasFilterCollector);
-        } else if (searchContext.scrollContext() != null) {
+        } else if (searchContext.scrollContext() != null) {// scorll
             // we can disable the tracking of total hits after the initial scroll query
             // since the total hits is preserved in the scroll context.
             int trackTotalHitsUpTo = searchContext.scrollContext().totalHits != null ?
@@ -433,12 +437,14 @@ abstract class TopDocsCollectorContext extends QueryCollectorContext {
             return new ScrollingTopDocsCollectorContext(reader, query, searchContext.scrollContext(),
                 searchContext.sort(), numDocs, searchContext.trackScores(), searchContext.numberOfShards(),
                 trackTotalHitsUpTo, hasFilterCollector);
-        } else if (searchContext.collapse() != null) {
+        } else if (searchContext.collapse() != null) {// collapse查询
             boolean trackScores = searchContext.sort() == null ? true : searchContext.trackScores();
             int numDocs = Math.min(searchContext.from() + searchContext.size(), totalNumDocs);
             return new CollapsingTopDocsCollectorContext(searchContext.collapse(), searchContext.sort(), numDocs, trackScores);
         } else {
+            // 正常需要数据，且不是scorll、collapse查询
             int numDocs = Math.min(searchContext.from() + searchContext.size(), totalNumDocs);
+            // 有定义rescore
             final boolean rescore = searchContext.rescore().isEmpty() == false;
             if (rescore) {
                 assert searchContext.sort() == null;

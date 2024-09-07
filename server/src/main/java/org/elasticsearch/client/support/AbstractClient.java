@@ -347,6 +347,7 @@ import org.elasticsearch.common.bytes.BytesReference;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.util.concurrent.ThreadContext;
 import org.elasticsearch.common.xcontent.XContentType;
+import org.elasticsearch.rest.action.RestCancellableNodeClient;
 import org.elasticsearch.tasks.TaskId;
 import org.elasticsearch.threadpool.ThreadPool;
 
@@ -403,10 +404,13 @@ public abstract class AbstractClient implements Client {
     public final <Request extends ActionRequest, Response extends ActionResponse> void execute(
         ActionType<Response> action, Request request, ActionListener<Response> listener) {
         try {
-            // 包装了原来已定义好的响应回调函数，作用是执行定义好的回调函数是在线程池执行的，达到响应是异步的效果
+            // 包装了原来已定义好的响应回调函数，作用是执行定义好的回调函数是在线程池执行的，达到响应是异步的效果！！！
+            // 而已有的2个listener就是解析成RestResponse跟转出http格式发送
             listener = threadedWrapper.wrap(listener);
             // 真正执行请求
             /**
+             * RestAction转发使用的
+             * @see RestCancellableNodeClient#doExecute(ActionType, ActionRequest, ActionListener)
              * 例如服务端Node
              * @see NodeClient#doExecute(ActionType, ActionRequest, ActionListener)
              */

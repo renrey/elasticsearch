@@ -106,6 +106,8 @@ public class JoinTaskExecutor implements ClusterStateTaskExecutor<JoinTaskExecut
         if (joiningNodes.size() == 1 && joiningNodes.get(0).isFinishElectionTask()) {
             return results.successes(joiningNodes).build(currentState);
         } else if (currentNodes.getMasterNode() == null && joiningNodes.stream().anyMatch(Task::isBecomeMasterTask)) {
+            // 本地currentNodes无leader，但这批有isBecomeMasterTask的任务->准备成为leader
+
             assert joiningNodes.stream().anyMatch(Task::isFinishElectionTask)
                 : "becoming a master but election is not finished " + joiningNodes;
             // use these joins to try and become the master.
@@ -118,9 +120,12 @@ public class JoinTaskExecutor implements ClusterStateTaskExecutor<JoinTaskExecut
             newState = becomeMasterAndTrimConflictingNodes(currentState, joiningNodes);
             nodesChanged = true;
         } else if (currentNodes.isLocalNodeElectedMaster() == false) {
+            // 这里说明只有当前本地节点作为 leader才会执行
+
             logger.trace("processing node joins, but we are not the master. current master: {}", currentNodes.getMasterNode());
             throw new NotMasterException("Node [" + currentNodes.getLocalNode() + "] not master for join request");
         } else {
+            // 原来已有leader？
             newState = ClusterState.builder(currentState);
         }
 
@@ -134,6 +139,9 @@ public class JoinTaskExecutor implements ClusterStateTaskExecutor<JoinTaskExecut
         final boolean enforceMajorVersion = currentState.getBlocks().hasGlobalBlock(STATE_NOT_RECOVERED_BLOCK) == false;
         // processing any joins
         Map<String, String> joiniedNodeNameIds = new HashMap<>();
+
+
+        // 处理所有join 任务
         for (final Task joinTask : joiningNodes) {
             // 这2种任务到这里无处理
             if (joinTask.isBecomeMasterTask() || joinTask.isFinishElectionTask()) {
@@ -169,6 +177,7 @@ public class JoinTaskExecutor implements ClusterStateTaskExecutor<JoinTaskExecut
             results.success(joinTask);
         }
 
+        // 只要有node 任务就是改变
         if (nodesChanged) {
             // BatchedRerouteService
             // 提交重新生成路由表的任务
@@ -194,6 +203,7 @@ public class JoinTaskExecutor implements ClusterStateTaskExecutor<JoinTaskExecut
                 if (newVotingConfigExclusions.equals(currentVotingConfigExclusions) == false) {
                     CoordinationMetadata.Builder coordMetadataBuilder = CoordinationMetadata.builder(currentState.coordinationMetadata())
                         .clearVotingConfigExclusions();
+                    // 新加入 vote exclude
                     newVotingConfigExclusions.forEach(coordMetadataBuilder::addVotingConfigExclusion);
                     Metadata newMetadata = Metadata.builder(currentState.metadata())
                                                     .coordinationMetadata(coordMetadataBuilder.build()).build();
@@ -202,6 +212,7 @@ public class JoinTaskExecutor implements ClusterStateTaskExecutor<JoinTaskExecut
                 }
             }
             // 最终生成新的ClusterState
+            // allocationService.adaptAutoExpandReplicas进行自动分配？
             return results.build(allocationService.adaptAutoExpandReplicas(newState.nodes(nodesBuilder).build()));
         } else {
             // we must return a new cluster state instance to force publishing. This is important
@@ -219,6 +230,7 @@ public class JoinTaskExecutor implements ClusterStateTaskExecutor<JoinTaskExecut
         // set 主节点 = 自己
         nodesBuilder.masterNodeId(currentState.nodes().getLocalNodeId());
 
+        // join的follower
         for (final Task joinTask : joiningNodes) {
             if (joinTask.isBecomeMasterTask() || joinTask.isFinishElectionTask()) {
                 // noop

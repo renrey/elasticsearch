@@ -113,7 +113,7 @@ public final class AutoExpandReplicas {
 
             final int min = getMinReplicas();
             final int max = getMaxReplicas(numMatchingDataNodes);
-            int numberOfReplicas = numMatchingDataNodes - 1;
+            int numberOfReplicas = numMatchingDataNodes - 1;// 默认datanode-1
             if (numberOfReplicas < min) {
                 numberOfReplicas = min;
             } else if (numberOfReplicas > max) {
@@ -140,11 +140,13 @@ public final class AutoExpandReplicas {
      */
     public static Map<Integer, List<String>> getAutoExpandReplicaChanges(Metadata metadata, RoutingAllocation allocation) {
         Map<Integer, List<String>> nrReplicasChanged = new HashMap<>();
-
+        // 遍历所有index 元数据
         for (final IndexMetadata indexMetadata : metadata) {
+            // 开启的（运行中）
             if (indexMetadata.getState() == IndexMetadata.State.OPEN || isIndexVerifiedBeforeClosed(indexMetadata)) {
-                AutoExpandReplicas autoExpandReplicas = SETTING.get(indexMetadata.getSettings());
+                AutoExpandReplicas autoExpandReplicas = SETTING.get(indexMetadata.getSettings());// 自动扩容？默认关闭
                 autoExpandReplicas.getDesiredNumberOfReplicas(indexMetadata, allocation).ifPresent(numberOfReplicas -> {
+                    // 副本数量，v=索引名字
                     if (numberOfReplicas != indexMetadata.getNumberOfReplicas()) {
                         nrReplicasChanged.computeIfAbsent(numberOfReplicas, ArrayList::new).add(indexMetadata.getIndex().getName());
                     }

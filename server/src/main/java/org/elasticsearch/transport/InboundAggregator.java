@@ -38,6 +38,7 @@ public class InboundAggregator implements Releasable {
     public InboundAggregator(Supplier<CircuitBreaker> circuitBreaker,
                              Function<String, RequestHandlerRegistry<TransportRequest>> registryFunction) {
         this(circuitBreaker, (Predicate<String>) actionName -> {
+            // 从handler的注册中心找到对应的action
             final RequestHandlerRegistry<TransportRequest> reg = registryFunction.apply(actionName);
             if (reg == null) {
                 throw new ActionNotFoundTransportException(actionName);

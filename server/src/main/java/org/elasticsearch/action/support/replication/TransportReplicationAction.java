@@ -181,6 +181,9 @@ public abstract class TransportReplicationAction<
 
     private void runReroutePhase(Task task, Request request, ActionListener<Response> listener, boolean initiatedByNodeClient) {
         try {
+            /**
+             * @see ReroutePhase#doRun()
+             */
             new ReroutePhase((ReplicationTask) task, request, listener, initiatedByNodeClient).run();
         } catch (RuntimeException e) {
             listener.onFailure(e);

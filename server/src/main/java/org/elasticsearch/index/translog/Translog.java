@@ -186,6 +186,7 @@ public class Translog extends AbstractIndexShardComponent implements IndexShardC
             boolean success = false;
             current = null;
             try {
+                // gen = 根据checkpoint保存的+1
                 current = createWriter(checkpoint.generation + 1, getMinFileGeneration(), checkpoint.globalCheckpoint,
                     persistedSequenceNumberConsumer);
                 success = true;
@@ -467,6 +468,7 @@ public class Translog extends AbstractIndexShardComponent implements IndexShardC
      * @throws IOException if creating the translog failed
      */
     TranslogWriter createWriter(long fileGeneration) throws IOException {
+        // 创建新文件的writer
         final TranslogWriter writer = createWriter(fileGeneration, getMinFileGeneration(), globalCheckpointSupplier.getAsLong(),
             persistedSequenceNumberConsumer);
         assert writer.sizeInBytes() == DEFAULT_HEADER_SIZE_IN_BYTES : "Mismatch translog header size; " +
@@ -507,17 +509,21 @@ public class Translog extends AbstractIndexShardComponent implements IndexShardC
     /**
      * Adds an operation to the transaction log.
      *
-     * @param operation the operation to add
+     * @param operation the operation to add 写到translog的 写操作信息
      * @return the location of the operation in the translog
      * @throws IOException if adding the operation to the translog resulted in an I/O exception
      */
+    // 这里可通过operation反找（index、delete）对应入口
     public Location add(final Operation operation) throws IOException {
+        // 这个方法的调用就是对外的底层方法，再下去就是tranlogs 字节流写文件相关
         final ReleasableBytesStreamOutput out = new ReleasableBytesStreamOutput(bigArrays);
         try {
             final long start = out.position();
-            out.skip(Integer.BYTES);
+            out.skip(Integer.BYTES);// 跳过1个int
+            // 1. 生成对应类型操作的内容，存储格式
             writeOperationNoSize(new BufferedChecksumStreamOutput(out), operation);
             final long end = out.position();
+            // 2. 上面的内容大小
             final int operationSize = (int) (end - Integer.BYTES - start);
             out.seek(start);
             out.writeInt(operationSize);
@@ -532,6 +538,7 @@ public class Translog extends AbstractIndexShardComponent implements IndexShardC
                     throw new IllegalArgumentException("Operation term is newer than the current term; "
                         + "current term[" + current.getPrimaryTerm() + "], operation term[" + operation + "]");
                 }
+                // 提交这个操作 的字节格式文本， 使用writer 写入translog（实际先写buffer）
                 return current.add(bytes, operation.seqNo());
             }
         } catch (final AlreadyClosedException | IOException ex) {
@@ -699,9 +706,10 @@ public class Translog extends AbstractIndexShardComponent implements IndexShardC
      * Sync's the translog.
      */
     public void sync() throws IOException {
+        // 读锁-> 读读不影响，除非写操作（截取）
         try (ReleasableLock lock = readLock.acquire()) {
             if (closed.get() == false) {
-                current.sync();
+                current.sync();// 底层channel force
             }
         } catch (final Exception ex) {
             closeOnTragicEvent(ex);
@@ -982,9 +990,9 @@ public class Translog extends AbstractIndexShardComponent implements IndexShardC
     public interface Operation {
         enum Type {
             @Deprecated
-            CREATE((byte) 1),
-            INDEX((byte) 2),
-            DELETE((byte) 3),
+            CREATE((byte) 1),// 单独创建：过期（因为就是index）
+            INDEX((byte) 2),// 索引（文档）
+            DELETE((byte) 3),// 删除文档
             NO_OP((byte) 4);
 
             private final byte id;
@@ -1049,6 +1057,7 @@ public class Translog extends AbstractIndexShardComponent implements IndexShardC
         static void writeOperation(final StreamOutput output, final Operation operation) throws IOException {
             output.writeByte(operation.opType().id());
             switch(operation.opType()) {
+                // create跟index一样，所以过期
                 case CREATE:
                     // the serialization logic in Index was identical to that of Create when create was deprecated
                 case INDEX:
@@ -1079,6 +1088,7 @@ public class Translog extends AbstractIndexShardComponent implements IndexShardC
 
     }
 
+    // 新增索引操作
     public static class Index implements Operation {
 
         public static final int FORMAT_6_0 = 8; // since 6.0.0
@@ -1115,9 +1125,9 @@ public class Translog extends AbstractIndexShardComponent implements IndexShardC
         }
 
         public Index(Engine.Index index, Engine.IndexResult indexResult) {
-            this.id = index.id();
+            this.id = index.id();// index的唯一id
             this.type = index.type();
-            this.source = index.source();
+            this.source = index.source();// 内容？
             this.routing = index.routing();
             this.seqNo = indexResult.getSeqNo();
             this.primaryTerm = index.primaryTerm();
@@ -1192,11 +1202,11 @@ public class Translog extends AbstractIndexShardComponent implements IndexShardC
 
         private void write(final StreamOutput out) throws IOException {
             final int format = out.getVersion().onOrAfter(Version.V_7_0_0) ? SERIALIZATION_FORMAT : FORMAT_6_0;
-            out.writeVInt(format);
-            out.writeString(id);
-            out.writeString(type);
-            out.writeBytesReference(source);
-            out.writeOptionalString(routing);
+            out.writeVInt(format);// 版本
+            out.writeString(id);// 操作id
+            out.writeString(type);// 操作类型
+            out.writeBytesReference(source);// 操作内容
+            out.writeOptionalString(routing);//
             if (format < FORMAT_NO_PARENT) {
                  out.writeOptionalString(null); // _parent
             }
@@ -1204,9 +1214,9 @@ public class Translog extends AbstractIndexShardComponent implements IndexShardC
             if (format < FORMAT_NO_VERSION_TYPE) {
                 out.writeByte(VersionType.EXTERNAL.getValue());
             }
-            out.writeLong(autoGeneratedIdTimestamp);
-            out.writeLong(seqNo);
-            out.writeLong(primaryTerm);
+            out.writeLong(autoGeneratedIdTimestamp);// 时间戳
+            out.writeLong(seqNo);// 序号
+            out.writeLong(primaryTerm);//
         }
 
         @Override
@@ -1571,9 +1581,11 @@ public class Translog extends AbstractIndexShardComponent implements IndexShardC
         // because closing it closes the underlying stream, which we don't
         // want to do here.
         out.resetDigest();
+        // 1. 生成内容字节（不同操作的存储格式）
         Translog.Operation.writeOperation(out, op);
         long checksum = out.getChecksum();
-        out.writeInt((int) checksum);
+        // 2. 1个int：checksum
+        out.writeInt((int) checksum);//
     }
 
     /**
@@ -1613,10 +1625,12 @@ public class Translog extends AbstractIndexShardComponent implements IndexShardC
             ensureOpen();
             try {
                 final TranslogReader reader = current.closeIntoReader();
+                // 新增新文件reader
                 readers.add(reader);
                 assert Checkpoint.read(location.resolve(CHECKPOINT_FILE_NAME)).generation == current.getGeneration();
                 copyCheckpointTo(location.resolve(getCommitCheckpointFileName(current.getGeneration())));
                 // create a new translog file; this will sync it and update the checkpoint data;
+                // 新文件标识就是当前gen+1 -》其实就是上个checkpoint+1
                 current = createWriter(current.getGeneration() + 1);
                 logger.trace("current translog set to [{}]", current.getGeneration());
             } catch (final Exception e) {
@@ -1657,6 +1671,7 @@ public class Translog extends AbstractIndexShardComponent implements IndexShardC
                 return;
             }
             final long minReferencedGen = getMinReferencedGen();
+            // 遍历translog文件的reader
             for (Iterator<TranslogReader> iterator = readers.iterator(); iterator.hasNext(); ) {
                 TranslogReader reader = iterator.next();
                 if (reader.getGeneration() >= minReferencedGen) {
@@ -1665,6 +1680,7 @@ public class Translog extends AbstractIndexShardComponent implements IndexShardC
                 iterator.remove();
                 IOUtils.closeWhileHandlingException(reader);
                 final Path translogPath = reader.path();
+                // 删除当前translog文件
                 logger.trace("delete translog file [{}], not referenced and not current anymore", translogPath);
                 // The checkpoint is used when opening the translog to know which files should be recovered from.
                 // We now update the checkpoint to ignore the file we are going to remove.
@@ -1672,6 +1688,7 @@ public class Translog extends AbstractIndexShardComponent implements IndexShardC
                 // but crashed before we could delete the file.
                 // sync at once to make sure that there's at most one unreferenced generation.
                 current.sync();
+                // 删除trangslog的checkpoint文件
                 deleteReaderFiles(reader);
             }
             assert readers.isEmpty() == false || current.generation == minReferencedGen :

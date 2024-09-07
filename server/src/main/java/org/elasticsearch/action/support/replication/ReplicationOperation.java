@@ -136,6 +136,7 @@ public class ReplicationOperation<
             final long maxSeqNoOfUpdatesOrDeletes = primary.maxSeqNoOfUpdatesOrDeletes();
             assert maxSeqNoOfUpdatesOrDeletes != SequenceNumbers.UNASSIGNED_SEQ_NO : "seqno_of_updates still uninitialized";
             final ReplicationGroup replicationGroup = primary.getReplicationGroup();
+            // 主shard的进行中的同步请求
             final PendingReplicationActions pendingReplicationActions = primary.getPendingReplicationActions();
             markUnavailableShardsAsStale(replicaRequest, replicationGroup);
             performOnReplicas(replicaRequest, globalCheckpoint, maxSeqNoOfUpdatesOrDeletes, replicationGroup, pendingReplicationActions);
@@ -181,6 +182,7 @@ public class ReplicationOperation<
         final ShardRouting primaryRouting = primary.routingEntry();
 
         for (final ShardRouting shard : replicationGroup.getReplicationTargets()) {
+            // 不同的分配id才执行 -》即同不会分一起
             if (shard.isSameAllocation(primaryRouting) == false) {
                 performOnReplica(shard, replicaRequest, globalCheckpoint, maxSeqNoOfUpdatesOrDeletes, pendingReplicationActions);
             }
@@ -252,6 +254,7 @@ public class ReplicationOperation<
             }
         };
 
+        // 加入shard对象的 集合，代表有正在等待的
         pendingReplicationActions.addPendingAction(allocationId, replicationAction);
         replicationAction.run();
     }

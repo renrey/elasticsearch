@@ -103,6 +103,7 @@ public class CoordinationMetadata implements Writeable, ToXContentFragment {
 
     @Override
     public void writeTo(StreamOutput out) throws IOException {
+        // 导出
         out.writeLong(term);
         lastCommittedConfiguration.writeTo(out);
         lastAcceptedConfiguration.writeTo(out);
@@ -172,8 +173,8 @@ public class CoordinationMetadata implements Writeable, ToXContentFragment {
 
     public static class Builder {
         private long term = 0;
-        private VotingConfiguration lastCommittedConfiguration = VotingConfiguration.EMPTY_CONFIG;
-        private VotingConfiguration lastAcceptedConfiguration = VotingConfiguration.EMPTY_CONFIG;
+        private VotingConfiguration lastCommittedConfiguration = VotingConfiguration.EMPTY_CONFIG;// publish后执行了commited
+        private VotingConfiguration lastAcceptedConfiguration = VotingConfiguration.EMPTY_CONFIG;// publish后执行commited前收到的
         private final Set<VotingConfigExclusion> votingConfigExclusions = new HashSet<>();
 
         public Builder() {
@@ -335,7 +336,8 @@ public class CoordinationMetadata implements Writeable, ToXContentFragment {
 
         public boolean hasQuorum(Collection<String> votes) {
             final HashSet<String> intersection = new HashSet<>(nodeIds);
-            intersection.retainAll(votes);
+            intersection.retainAll(votes);// 保留votes的 -》
+            // nodeIds与votes的交集 数量的2倍大于nodeIds -》即交集超过1半？
             return intersection.size() * 2 > nodeIds.size();
         }
 

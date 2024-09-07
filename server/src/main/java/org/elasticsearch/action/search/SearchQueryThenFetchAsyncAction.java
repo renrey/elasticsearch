@@ -76,6 +76,12 @@ class SearchQueryThenFetchAsyncAction extends AbstractSearchAsyncAction<SearchPh
          *request: 重写后的请求
          * task: 外面整体rest请求task
          *listener: 这里的是对shard结果处理函数，以及在当前action中本次shard操作消息更新
+         *
+         * 可知发送了QUERY_ACTION_NAME的请求
+         * @see SearchTransportService#QUERY_ACTION_NAME
+         *
+         * 对应shard服务执行：
+         * @see org.elasticsearch.search.SearchService#executeQueryPhase(org.elasticsearch.search.internal.ShardSearchRequest, org.elasticsearch.action.search.SearchShardTask, org.elasticsearch.action.ActionListener)
          */
         getSearchTransport().sendExecuteQuery(getConnection(shard.getClusterAlias(), shard.getNodeId()), request, getTask(), listener);
     }

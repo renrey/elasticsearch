@@ -48,6 +48,7 @@ public class EsThreadPoolExecutor extends ThreadPoolExecutor {
         this.contextHolder = contextHolder;
     }
 
+    // 新增关闭时的执行钩子
     @Override
     protected synchronized void terminated() {
         super.terminated();
@@ -72,6 +73,7 @@ public class EsThreadPoolExecutor extends ThreadPoolExecutor {
         try {
             super.execute(command);
         } catch (EsRejectedExecutionException ex) {
+            // 拒绝时钩子
             if (command instanceof AbstractRunnable) {
                 // If we are an abstract runnable we can handle the rejection
                 // directly and don't need to rethrow it.
@@ -87,6 +89,7 @@ public class EsThreadPoolExecutor extends ThreadPoolExecutor {
         }
     }
 
+    // 执行后钩子
     @Override
     protected void afterExecute(Runnable r, Throwable t) {
         super.afterExecute(r, t);

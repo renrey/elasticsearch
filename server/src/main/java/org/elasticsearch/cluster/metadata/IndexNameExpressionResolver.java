@@ -584,6 +584,7 @@ public class IndexNameExpressionResolver {
         // List of indices that don't require any routing
         Set<String> norouting = new HashSet<>();
         if (routing != null) {
+            // ,分割
             paramRouting = Sets.newHashSet(Strings.splitStringByCommaToArray(routing));
         }
 

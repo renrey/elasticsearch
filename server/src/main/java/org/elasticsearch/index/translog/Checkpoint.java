@@ -198,11 +198,14 @@ final class Checkpoint {
     }
 
     public static void write(FileChannel fileChannel, Path checkpointFile, Checkpoint checkpoint) throws IOException {
+        // 生成checkpoint内容的字节数组
         byte[] bytes = createCheckpointBytes(checkpointFile, checkpoint);
+        // 内容写入文件流
         Channels.writeToChannel(bytes, fileChannel, 0);
         // no need to force metadata, file size stays the same and we did the full fsync
         // when we first created the file, so the directory entry doesn't change as well
-        fileChannel.force(false);
+        // fysnc强制刷盘
+        fileChannel.force(false);// 因为已有文件了，无须强制metadata
     }
 
     private static byte[] createCheckpointBytes(Path checkpointFile, Checkpoint checkpoint) throws IOException {

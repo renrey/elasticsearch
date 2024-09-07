@@ -149,6 +149,7 @@ public abstract class ReplicaShardAllocator extends BaseGatewayShardAllocator {
                 result.v2() != null ? new ArrayList<>(result.v2().values()) : null);
         }
 
+        // 从每个node获取这个shard组的信息
         AsyncShardFetch.FetchResult<NodeStoreFilesMetadata> shardStores = fetchData(unassignedShard, allocation);
         if (shardStores.hasData() == false) {
             logger.trace("{}: ignoring allocation, still fetching shard stores", unassignedShard);
@@ -160,6 +161,7 @@ public abstract class ReplicaShardAllocator extends BaseGatewayShardAllocator {
             return AllocateUnassignedDecision.no(AllocationStatus.FETCHING_SHARD_DATA, nodeDecisions);
         }
 
+        // 判断主分片是否存活
         ShardRouting primaryShard = routingNodes.activePrimary(unassignedShard.shardId());
         if (primaryShard == null) {
             assert explain : "primary should only be null here if we are in explain mode, so we didn't " +
@@ -168,7 +170,9 @@ public abstract class ReplicaShardAllocator extends BaseGatewayShardAllocator {
                 new ArrayList<>(result.v2().values()));
         }
         assert primaryShard.currentNodeId() != null;
+        // 获取主分片的node对象
         final DiscoveryNode primaryNode = allocation.nodes().get(primaryShard.currentNodeId());
+        // 获取主分片的存储信息？
         final TransportNodesListShardStoreMetadata.StoreFilesMetadata primaryStore = findStore(primaryNode, shardStores);
         if (primaryStore == null) {
             // if we can't find the primary data, it is probably because the primary shard is corrupted (and listing failed)
@@ -179,6 +183,7 @@ public abstract class ReplicaShardAllocator extends BaseGatewayShardAllocator {
             return AllocateUnassignedDecision.NOT_TAKEN;
         }
 
+        // 查询匹配节点
         MatchingNodes matchingNodes = findMatchingNodes(
             unassignedShard, allocation, false, primaryNode, primaryStore, shardStores, explain);
         assert explain == false || matchingNodes.nodeDecisions != null : "in explain mode, we must have individual node decisions";
@@ -196,6 +201,7 @@ public abstract class ReplicaShardAllocator extends BaseGatewayShardAllocator {
                 // we are throttling this, as we have enough other shards to allocate to this node, so ignore it for now
                 return AllocateUnassignedDecision.throttle(nodeDecisions);
             } else {
+                // 成功
                 logger.debug("[{}][{}]: allocating [{}] to [{}] in order to reuse its unallocated persistent store",
                     unassignedShard.index(), unassignedShard.id(), unassignedShard, nodeWithHighestMatch.node());
                 // we found a match
@@ -317,6 +323,7 @@ public abstract class ReplicaShardAllocator extends BaseGatewayShardAllocator {
             // check if we can allocate on that node...
             // we only check for NO, since if this node is THROTTLING and it has enough "same data"
             // then we will try and assign it next time
+            // 判断这个node是否可行
             Decision decision = allocation.deciders().canAllocate(shard, node, allocation);
             MatchingNode matchingNode = null;
             if (explain) {
@@ -325,11 +332,14 @@ public abstract class ReplicaShardAllocator extends BaseGatewayShardAllocator {
                 nodeDecisions.put(node.nodeId(), new NodeAllocationResult(discoNode, shardStoreInfo, decision));
             }
 
+            // 不行下一个
             if (decision.type() == Decision.Type.NO) {
                 continue;
             }
+            // 可以分配
 
             if (matchingNode == null) {
+                // 生成matchingNode
                 matchingNode = computeMatchingNode(primaryNode, primaryStore, discoNode, storeFilesMetadata);
             }
             matchingNodes.put(discoNode, matchingNode);
@@ -374,6 +384,7 @@ public abstract class ReplicaShardAllocator extends BaseGatewayShardAllocator {
         final long retainingSeqNoForReplica = primaryStore.getPeerRecoveryRetentionLeaseRetainingSeqNo(replicaNode);
         final boolean isNoopRecovery = (retainingSeqNoForReplica >= retainingSeqNoForPrimary && retainingSeqNoForPrimary >= 0)
             || hasMatchingSyncId(primaryStore, replicaStore);
+        // 大概计算 这个node上包含主分片已有文件大小（即同步进度？）
         final long matchingBytes = computeMatchingBytes(primaryStore, replicaStore);
         return new MatchingNode(matchingBytes, retainingSeqNoForReplica, isNoopRecovery);
     }
@@ -426,6 +437,7 @@ public abstract class ReplicaShardAllocator extends BaseGatewayShardAllocator {
         MatchingNodes(Map<DiscoveryNode, MatchingNode> matchingNodes, @Nullable Map<String, NodeAllocationResult> nodeDecisions) {
             this.matchingNodes = matchingNodes;
             this.nodeDecisions = nodeDecisions;
+            // 优先级判断retainingSeqNo
             this.nodeWithHighestMatch = matchingNodes.entrySet().stream()
                 .filter(e -> e.getValue().anyMatch())
                 .max(Comparator.comparing(Map.Entry::getValue, MatchingNode.COMPARATOR))

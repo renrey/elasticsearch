@@ -105,8 +105,11 @@ public final class IndicesRequestCache implements RemovalListener<IndicesRequest
     BytesReference getOrCompute(CacheEntity cacheEntity, CheckedSupplier<BytesReference, IOException> loader,
                                 MappingLookup.CacheKey mappingCacheKey, DirectoryReader reader, BytesReference cacheKey) throws Exception {
         assert reader.getReaderCacheHelper() != null;
+        // 以这种4种属性作为key （单个shard、mapping、查询、）
         final Key key =  new Key(cacheEntity, mappingCacheKey, reader.getReaderCacheHelper().getKey(), cacheKey);
+        // 加载缓存相关
         Loader cacheLoader = new Loader(cacheEntity, loader);
+        // 就是kv hash
         BytesReference value = cache.computeIfAbsent(key, cacheLoader);
         if (cacheLoader.isLoaded()) {
             key.entity.onMiss();
@@ -232,11 +235,13 @@ public final class IndicesRequestCache implements RemovalListener<IndicesRequest
             return Collections.emptyList();
         }
 
+        // 同一个key
         @Override
         public boolean equals(Object o) {
             if (this == o) return true;
             if (o == null || getClass() != o.getClass()) return false;
             Key key = (Key) o;
+            // 4种都一样
             if (mappingCacheKey.equals(key.mappingCacheKey) == false) return false;
             if (readerCacheKey.equals(key.readerCacheKey) == false) return false;
             if (entity.getCacheIdentity().equals(key.entity.getCacheIdentity()) == false) return false;

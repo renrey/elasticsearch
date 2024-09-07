@@ -14,6 +14,7 @@ import org.elasticsearch.action.ActionRequestValidationException;
 import org.elasticsearch.action.search.SearchAction;
 import org.elasticsearch.action.search.SearchContextId;
 import org.elasticsearch.action.search.SearchRequest;
+import org.elasticsearch.action.search.TransportSearchAction;
 import org.elasticsearch.action.support.IndicesOptions;
 import org.elasticsearch.client.node.NodeClient;
 import org.elasticsearch.common.Booleans;
@@ -54,6 +55,7 @@ import static org.elasticsearch.rest.RestRequest.Method.GET;
 import static org.elasticsearch.rest.RestRequest.Method.POST;
 import static org.elasticsearch.search.suggest.SuggestBuilders.termSuggestion;
 
+// 常见search请求的处理入口
 public class RestSearchAction extends BaseRestHandler {
     /**
      * Indicates whether hits.total should be rendered as an integer or an object
@@ -89,10 +91,12 @@ public class RestSearchAction extends BaseRestHandler {
             new Route(POST, "/{index}/{type}/_search")));
     }
 
+    // 1. 解析http请求内容成具体action业务参数
+    // 2. 定义调用执行当前action的函数
     @Override
     public RestChannelConsumer prepareRequest(final RestRequest request, final NodeClient client) throws IOException {
         SearchRequest searchRequest;
-        // 创建初始SearchRequest对象，未有值的
+        // 1. 创建初始SearchRequest对象，未有值的
         // 版本标识
         if (request.hasParam("min_compatible_shard_node")) {
             searchRequest = new SearchRequest(Version.fromString(request.param("min_compatible_shard_node")));
@@ -121,7 +125,12 @@ public class RestSearchAction extends BaseRestHandler {
             parseSearchRequest(searchRequest, request, parser, client.getNamedWriteableRegistry(), setSize));
 
         /**
-         * 最后返回的执行函数
+         * 执行当前action函数
+         * channel就是RestChannel，负责把RestResponse转成http协议发送
+         * 其实RestAction不做请求的处理，只是通过集群内部请求转发到对应内部处理
+         * 作用就是
+         * 1. 使得http请求可被取消（通过RestCancellableNodeClient）
+         * 2. 把响应的具体业务内容转成RestResponse：到content中变成字节数组
          */
         return channel -> {
             /**
@@ -129,12 +138,16 @@ public class RestSearchAction extends BaseRestHandler {
              * 而底层client是NodeClient ： 实际了执行RestAction时，需要先把当前的action转成TransportAction，再执行
              * 也就说是转成TransportAction交给集群去执行！！！
              */
+            // 发送客户端
             RestCancellableNodeClient cancelClient = new RestCancellableNodeClient(client, request.getHttpChannel());
             /**
              * 2. 执行
              * searchRequest: 解析后的SearchRequest对象
              * RestStatusToXContentListener:  action(Request)执行结果(成功、失败)的回调函数, 具体作用：把action的响应封装成rest 响应，并提交给RestChannel 发送响应
+             内部的action
+             @see TransportSearchAction
              */
+            // SearchAction.INSTANCE!!!通过绑定，实际就是到TransportSearchAction
             cancelClient.execute(SearchAction.INSTANCE, searchRequest, new RestStatusToXContentListener<>(channel));
         };
     }

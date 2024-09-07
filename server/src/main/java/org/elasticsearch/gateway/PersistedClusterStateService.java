@@ -315,10 +315,12 @@ public class PersistedClusterStateService {
         // sufficient to read _any_ copy. "Mostly" sufficient because the user can change the set of data paths when restarting, and may
         // add a data path containing a stale copy of the metadata. We deal with this by using the freshest copy we can find.
         for (final Path dataPath : dataPaths) {
+            // _state 目录
             final Path indexPath = dataPath.resolve(METADATA_DIRECTORY_NAME);
             if (Files.exists(indexPath)) {
                 try (Directory directory = createDirectory(indexPath);
                      DirectoryReader directoryReader = DirectoryReader.open(directory)) {
+                    // 加载目录数据 ，通过lucene
                     final OnDiskState onDiskState = loadOnDiskState(dataPath, directoryReader);
 
                     if (nodeId.equals(onDiskState.nodeId) == false) {
@@ -367,6 +369,7 @@ public class PersistedClusterStateService {
     }
 
     private OnDiskState loadOnDiskState(Path dataPath, DirectoryReader reader) throws IOException {
+        // 创建lucene IndexSearcher
         final IndexSearcher searcher = new IndexSearcher(reader);
         searcher.setQueryCache(null);
 

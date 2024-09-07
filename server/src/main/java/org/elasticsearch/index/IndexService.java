@@ -118,7 +118,7 @@ public class IndexService extends AbstractIndexComponent implements IndicesClust
     private final SimilarityService similarityService;
     private final EngineFactory engineFactory;
     private final IndexWarmer warmer;
-    private volatile Map<Integer, IndexShard> shards = emptyMap();
+    private volatile Map<Integer, IndexShard> shards = emptyMap();// 具体分片
     private final AtomicBoolean closed = new AtomicBoolean(false);
     private final AtomicBoolean deleted = new AtomicBoolean(false);
     private final IndexSettings indexSettings;
@@ -203,6 +203,7 @@ public class IndexService extends AbstractIndexComponent implements IndicesClust
             }
             indexFieldData.setListener(new FieldDataCacheListener(this));
             this.bitsetFilterCache = new BitsetFilterCache(indexSettings, new BitsetCacheListener(this));
+            // index预热
             this.warmer = new IndexWarmer(threadPool, indexFieldData, bitsetFilterCache.createListener(threadPool));
             this.indexCache = new IndexCache(indexSettings, queryCache, bitsetFilterCache);
         } else {
@@ -232,14 +233,16 @@ public class IndexService extends AbstractIndexComponent implements IndicesClust
         this.searchOperationListeners = Collections.unmodifiableList(searchOperationListeners);
         this.indexingOperationListeners = Collections.unmodifiableList(indexingOperationListeners);
         // kick off async ops for the first shard in this index
-        this.refreshTask = new AsyncRefreshTask(this);
+        this.refreshTask = new AsyncRefreshTask(this);// 提交默认refresh任务
         this.trimTranslogTask = new AsyncTrimTranslogTask(this);
         this.globalCheckpointTask = new AsyncGlobalCheckpointTask(this);
         this.retentionLeaseSyncTask = new AsyncRetentionLeaseSyncTask(this);
+        // （初始化）提交flush任务
         updateFsyncTaskIfNecessary();
     }
 
     static boolean needsMapperService(IndexSettings indexSettings, IndexCreationContext indexCreationContext) {
+        // 即其中一个不符合，即可
         return false == (indexSettings.getIndexMetadata().getState() == IndexMetadata.State.CLOSE &&
             indexCreationContext == IndexCreationContext.CREATE_INDEX); // metadata verification needs a mapper service
     }
@@ -277,6 +280,7 @@ public class IndexService extends AbstractIndexComponent implements IndicesClust
 
     /**
      * Return the shard with the provided id, or throw an exception if it doesn't exist.
+     * 获取对应id的shard
      */
     public IndexShard getShard(int shardId) {
         IndexShard indexShard = getShardOrNull(shardId);
@@ -405,9 +409,13 @@ public class IndexService extends AbstractIndexComponent implements IndicesClust
         ShardLock lock = null;
         eventListener.beforeIndexShardCreated(routing, indexSettings);
         try {
+            // 有个env的shard锁
             lock = nodeEnv.shardLock(shardId, "starting shard", TimeUnit.SECONDS.toMillis(5));
             ShardPath path;
             try {
+                // 加载当前shard的文件路径 （对应lucene目录-》/数据目录/nodes/0/index/shardId），
+                //会判断是否已有最新state文件是否包含这个shard-》判断是已有shard数据
+                // nodeEnv: 当前node实例的配置信息
                 path = ShardPath.loadShardPath(logger, nodeEnv, shardId, this.indexSettings.customDataPath());
             } catch (IllegalStateException ex) {
                 logger.warn("{} failed to load shard path, trying to remove leftover", shardId);
@@ -421,6 +429,7 @@ public class IndexService extends AbstractIndexComponent implements IndicesClust
                 }
             }
 
+            // 等于没有这个shard
             if (path == null) {
                 // TODO: we should, instead, hold a "bytes reserved" of how large we anticipate this shard will be, e.g. for a shard
                 // that's being relocated/replicated we know how large it will become once it's done copying:
@@ -449,16 +458,18 @@ public class IndexService extends AbstractIndexComponent implements IndicesClust
 
             logger.debug("creating shard_id {}", shardId);
             // if we are on a shared FS we only own the shard (ie. we can safely delete it) if we are the primary.
+            // 一些缓存预热-》主要是exist _primary_terms的、还有exist 嵌套对象的
             final Engine.Warmer engineWarmer = (reader) -> {
                 IndexShard shard =  getShardOrNull(shardId.getId());
                 if (shard != null) {
                     warmer.warm(reader, shard, IndexService.this.indexSettings);
                 }
             };
+            // /数据目录/nodes/0/index/shardId/index，shard目录下有个index目录（另外还有translog）
             Directory directory = directoryFactory.newDirectory(this.indexSettings, path);
             store = new Store(shardId, this.indexSettings, directory, lock,
                     new StoreCloseListener(shardId, () -> eventListener.onStoreClosed(shardId)));
-            eventListener.onStoreCreated(shardId);
+            eventListener.onStoreCreated(shardId);// 全局indices 的onStoreClose会+1，代表开启一个shard 存储
             indexShard = new IndexShard(
                     routing,
                     this.indexSettings,
@@ -482,21 +493,26 @@ public class IndexService extends AbstractIndexComponent implements IndicesClust
                     snapshotCommitSupplier);
             eventListener.indexShardStateChanged(indexShard, null, indexShard.state(), "shard created");
             eventListener.afterIndexShardCreated(indexShard);
+            // 存到map
             shards = newMapBuilder(shards).put(shardId.id(), indexShard).immutableMap();
             success = true;
             return indexShard;
         } catch (ShardLockObtainFailedException e) {
             throw new IOException("failed to obtain in-memory shard lock", e);
         } finally {
+            // 解锁
             if (success == false) {
                 if (lock != null) {
                     IOUtils.closeWhileHandlingException(lock);
                 }
+                // 代表用来
                 closeShard("initialization failed", shardId, indexShard, store, eventListener);
             }
         }
     }
 
+    // 本地index关闭移除shard
+    // 注意：是本对象的同步方法，与本对象其他sync方法串行执行
     @Override
     public synchronized void removeShard(int shardId, String reason) {
         final ShardId sId = new ShardId(index(), shardId);
@@ -506,8 +522,10 @@ public class IndexService extends AbstractIndexComponent implements IndicesClust
         }
         logger.debug("[{}] closing... (reason: [{}])", shardId, reason);
         HashMap<Integer, IndexShard> newShards = new HashMap<>(shards);
-        indexShard = newShards.remove(shardId);
+        indexShard = newShards.remove(shardId);// 从map删除当前shard
         shards = unmodifiableMap(newShards);
+
+        // 关闭shard操作！！！
         closeShard(reason, sId, indexShard, indexShard.store(), indexShard.getIndexEventListener());
         logger.debug("[{}] closed (reason: [{}])", shardId, reason);
     }
@@ -694,7 +712,7 @@ public class IndexService extends AbstractIndexComponent implements IndicesClust
                 final IndexShard shard = indexService.getShardOrNull(shardId.id());
                 if (shard != null) {
                     long ramBytesUsed = accountable != null ? accountable.ramBytesUsed() : 0L;
-                    shard.shardBitsetFilterCache().onCached(ramBytesUsed);
+                    shard.shardBitsetFilterCache().onCached(ramBytesUsed);// 统计指标累加
                 }
             }
         }
@@ -778,12 +796,14 @@ public class IndexService extends AbstractIndexComponent implements IndicesClust
                             "[{}] failed to notify shard about setting change", shard.shardId().id()), e);
                 }
             }
+            // refresh 间隔配置变了
             if (refreshTask.getInterval().equals(indexSettings.getRefreshInterval()) == false) {
                 // once we change the refresh interval we schedule yet another refresh
                 // to ensure we are in a clean and predictable state.
                 // it doesn't matter if we move from or to <code>-1</code>  in both cases we want
                 // docs to become visible immediately. This also flushes all pending indexing / search requests
                 // that are waiting for a refresh.
+                // 先强制执行1次refresh
                 threadPool.executor(ThreadPool.Names.REFRESH).execute(new AbstractRunnable() {
                     @Override
                     public void onFailure(Exception e) {
@@ -800,8 +820,11 @@ public class IndexService extends AbstractIndexComponent implements IndicesClust
                         return true;
                     }
                 });
+                // 重新提交refresh定时任务
                 rescheduleRefreshTasks();
             }
+
+            // 提交FlUSH定时任务
             updateFsyncTaskIfNecessary();
         }
 
@@ -809,6 +832,7 @@ public class IndexService extends AbstractIndexComponent implements IndicesClust
     }
 
     private void updateFsyncTaskIfNecessary() {
+        // 限定请求才能触发 translog的fsync（不可定时fsync），不持有task
         if (indexSettings.getTranslogDurability() == Translog.Durability.REQUEST) {
             try {
                 if (fsyncTask != null) {
@@ -817,9 +841,11 @@ public class IndexService extends AbstractIndexComponent implements IndicesClust
             } finally {
                 fsyncTask = null;
             }
-        } else if (fsyncTask == null) {
+        } else if (fsyncTask == null) {// 初始加载index or 修改当前级别
+            // 可定时fysnc translog，任务未生成 -》提交task到对应线程池
             fsyncTask = new AsyncTranslogFSync(this);
-        } else {
+        } else {// 后续定时进入
+            // 可定时fysnc translog，有任务尝试更新配置
             fsyncTask.updateIfNeeded();
         }
     }
@@ -861,8 +887,9 @@ public class IndexService extends AbstractIndexComponent implements IndicesClust
         if (indexSettings.getTranslogDurability() == Translog.Durability.ASYNC) {
             for (IndexShard shard : this.shards.values()) {
                 try {
+                    // 是否需要fysnc，就是看是否有新增内容
                     if (shard.isSyncNeeded()) {
-                        shard.sync();
+                        shard.sync();// fsync
                     }
                 } catch (AlreadyClosedException ex) {
                     // fine - continue;
@@ -873,7 +900,9 @@ public class IndexService extends AbstractIndexComponent implements IndicesClust
         }
     }
 
+    // 执行refresh操作
     private void maybeRefreshEngine(boolean force) {
+        // 定时执行需要达到间隔、强制执行
         if (indexSettings.getRefreshInterval().millis() > 0 || force) {
             for (IndexShard shard : this.shards.values()) {
                 try {
@@ -951,6 +980,7 @@ public class IndexService extends AbstractIndexComponent implements IndicesClust
         }
     }
 
+    // 1个index下定时任务执行架子，创建任务就等于提交任务到线程池
     abstract static class BaseAsyncTask extends AbstractAsyncTask {
 
         protected final IndexService indexService;
@@ -958,12 +988,14 @@ public class IndexService extends AbstractIndexComponent implements IndicesClust
         BaseAsyncTask(final IndexService indexService, final TimeValue interval) {
             super(indexService.logger, indexService.threadPool, interval, true);
             this.indexService = indexService;
+            // 创建对象时，（做判断）提交调度
             rescheduleIfNecessary();
         }
 
         @Override
         protected boolean mustReschedule() {
             // don't re-schedule if the IndexService instance is closed or if the index is closed
+            // 可定时调度首先条件：当前index未关闭，还是open状态使用
             return indexService.closed.get() == false
                 && indexService.indexSettings.getIndexMetadata().getState() == IndexMetadata.State.OPEN;
         }
@@ -975,20 +1007,24 @@ public class IndexService extends AbstractIndexComponent implements IndicesClust
     static final class AsyncTranslogFSync extends BaseAsyncTask {
 
         AsyncTranslogFSync(IndexService indexService) {
+            // 默认5s执行1次
             super(indexService, indexService.getIndexSettings().getTranslogSyncInterval());
         }
 
         @Override
         protected String getThreadPool() {
+            // 定时fysnc translog的线程池
             return ThreadPool.Names.FLUSH;
         }
 
         @Override
         protected void runInternal() {
+            // 任务业务执行逻辑
             indexService.maybeFSyncTranslogs();
         }
 
         void updateIfNeeded() {
+            // 就是配置间隔变更，需要更新
             final TimeValue newInterval = indexService.getIndexSettings().getTranslogSyncInterval();
             if (newInterval.equals(getInterval()) == false) {
                 setInterval(newInterval);
@@ -1004,11 +1040,13 @@ public class IndexService extends AbstractIndexComponent implements IndicesClust
     final class AsyncRefreshTask extends BaseAsyncTask {
 
         AsyncRefreshTask(IndexService indexService) {
+            // 默认1s执行1次refresh
             super(indexService, indexService.getIndexSettings().getRefreshInterval());
         }
 
         @Override
         protected void runInternal() {
+            // refresh的业务逻辑
             indexService.maybeRefreshEngine(false);
         }
 

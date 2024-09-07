@@ -120,6 +120,7 @@ public class OperationRouting {
                                                            @Nullable Map<String, Long> nodeCounts) {
         final Set<IndexShardRoutingTable> shards = computeTargetedShards(clusterState, concreteIndices, routing);
         final Set<ShardIterator> set = new HashSet<>(shards.size());
+        // 遍历shard组
         for (IndexShardRoutingTable shard : shards) {
             ShardIterator iterator = preferenceActiveShardIterator(shard,
                     clusterState.nodes().getLocalNodeId(), clusterState.nodes(), preference, collectorService, nodeCounts);
@@ -142,18 +143,23 @@ public class OperationRouting {
         routing = routing == null ? EMPTY_ROUTING : routing; // just use an empty map
         final Set<IndexShardRoutingTable> set = new HashSet<>();
         // we use set here and not list since we might get duplicates
-        for (String index : concreteIndices) {
+        for (String index : concreteIndices) {// 遍历index
+            // index路由表
             final IndexRoutingTable indexRouting = indexRoutingTable(clusterState, index);
             final IndexMetadata indexMetadata = indexMetadata(clusterState, index);
+            // 如果指定了
             final Set<String> effectiveRouting = routing.get(index);
             if (effectiveRouting != null) {
+                // 遍历指定的shard（通过routing）-》可知其实就是只在对应shard组上执行
                 for (String r : effectiveRouting) {
                     final int routingPartitionSize = indexMetadata.getRoutingPartitionSize();
-                    for (int partitionOffset = 0; partitionOffset < routingPartitionSize; partitionOffset++) {
+                    for (int partitionOffset = 0; partitionOffset < routingPartitionSize; partitionOffset++) {、
+                        // calculateScaledShardId: 计算shardId
                         set.add(RoutingTable.shardRoutingTable(indexRouting, calculateScaledShardId(indexMetadata, r, partitionOffset)));
                     }
                 }
             } else {
+                // 没指定，默认使用集群中index路由表
                 for (IndexShardRoutingTable indexShard : indexRouting) {
                     set.add(indexShard);
                 }
@@ -166,24 +172,28 @@ public class OperationRouting {
                                                         DiscoveryNodes nodes, @Nullable String preference,
                                                         @Nullable ResponseCollectorService collectorService,
                                                         @Nullable Map<String, Long> nodeCounts) {
+        // 请求的preference参数
         if (preference == null || preference.isEmpty()) {
             return shardRoutings(indexShard, nodes, collectorService, nodeCounts);
         }
         if (preference.charAt(0) == '_') {
             Preference preferenceType = Preference.parse(preference);
+            // 优先指定的shard
             if (preferenceType == Preference.SHARDS) {
                 // starts with _shards, so execute on specific ones
                 int index = preference.indexOf('|');
 
                 String shards;
-                if (index == -1) {
+                if (index == -1) {// 無或者
                     shards = preference.substring(Preference.SHARDS.type().length() + 1);
                 } else {
                     shards = preference.substring(Preference.SHARDS.type().length() + 1, index);
                 }
+                // 拆分
                 String[] ids = Strings.splitStringByCommaToArray(shards);
                 boolean found = false;
                 for (String id : ids) {
+                    // 目标id
                     if (Integer.parseInt(id) == indexShard.shardId().id()) {
                         found = true;
                         break;
@@ -194,31 +204,34 @@ public class OperationRouting {
                 }
                 // no more preference
                 if (index == -1 || index == preference.length() - 1) {
+                    // 最后id才返回？
                     return shardRoutings(indexShard, nodes, collectorService, nodeCounts);
                 } else {
                     // update the preference and continue
-                    preference = preference.substring(index + 1);
+                    preference = preference.substring(index + 1);// 后一个
                 }
             }
             preferenceType = Preference.parse(preference);
             switch (preferenceType) {
-                case PREFER_NODES:
+                case PREFER_NODES:// 优先指定节点
                     final Set<String> nodesIds =
                             Arrays.stream(
                                     preference.substring(Preference.PREFER_NODES.type().length() + 1).split(",")
                             ).collect(Collectors.toSet());
                     return indexShard.preferNodeActiveInitializingShardsIt(nodesIds);
-                case LOCAL:
+                case LOCAL:// 优先当前节点
                     return indexShard.preferNodeActiveInitializingShardsIt(Collections.singleton(localNodeId));
-                case ONLY_LOCAL:
+                case ONLY_LOCAL:// 只在当前node
                     return indexShard.onlyNodeActiveInitializingShardsIt(localNodeId);
-                case ONLY_NODES:
+                case ONLY_NODES:// 只在指定的node
                     String nodeAttributes = preference.substring(Preference.ONLY_NODES.type().length() + 1);
                     return indexShard.onlyNodeSelectorActiveInitializingShardsIt(nodeAttributes.split(","), nodes);
                 default:
                     throw new IllegalArgumentException("unknown preference [" + preferenceType + "]");
             }
         }
+
+        // 非_前缀
         // if not, then use it as the index
         int routingHash = Murmur3HashFunction.hash(preference);
         if (nodes.getMinNodeVersion().onOrAfter(Version.V_6_0_0_alpha1)) {
@@ -290,6 +303,7 @@ public class OperationRouting {
         final String effectiveRouting;
         final int partitionOffset;
 
+        // 没传入routing，就是id-》task Id
         if (routing == null) {
             assert(indexMetadata.isRoutingPartitionedIndex() == false) : "A routing value is required for gets from a partitioned index";
             effectiveRouting = id;
@@ -303,7 +317,7 @@ public class OperationRouting {
             // 1。先对请求id进行murmurhash
             // 2。用hash值对index.routing_partition_size进行取模
             partitionOffset = Math.floorMod(Murmur3HashFunction.hash(id), indexMetadata.getRoutingPartitionSize());
-        } else {
+        } else {// 默认
             // we would have still got 0 above but this check just saves us an unnecessary hash calculation
             partitionOffset = 0;
         }

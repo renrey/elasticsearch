@@ -26,6 +26,7 @@ import org.elasticsearch.common.util.PageCacheRecycler;
 public class ReleasableBytesStreamOutput extends BytesStreamOutput implements Releasable {
 
     public ReleasableBytesStreamOutput(BigArrays bigarrays) {
+        // 16kb page size ,类似mysql用16kb，但linux默认是4kb
         this(PageCacheRecycler.PAGE_SIZE_IN_BYTES, bigarrays);
     }
 

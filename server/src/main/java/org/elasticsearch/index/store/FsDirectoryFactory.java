@@ -50,6 +50,7 @@ public class FsDirectoryFactory implements IndexStorePlugin.DirectoryFactory {
 
     @Override
     public Directory newDirectory(IndexSettings indexSettings, ShardPath path) throws IOException {
+        // /数据目录/nodes/0/index/shardId/index
         final Path location = path.resolveIndex();
         final LockFactory lockFactory = indexSettings.getValue(INDEX_LOCK_FACTOR_SETTING);
         Files.createDirectories(location);
@@ -60,6 +61,7 @@ public class FsDirectoryFactory implements IndexStorePlugin.DirectoryFactory {
         final String storeType =
             indexSettings.getSettings().get(IndexModule.INDEX_STORE_TYPE_SETTING.getKey(), IndexModule.Type.FS.getSettingsKey());
         IndexModule.Type type;
+        // 使用映射类型
         if (IndexModule.Type.FS.match(storeType)) {
             type = IndexModule.defaultStoreType(IndexModule.NODE_STORE_ALLOW_MMAP.get(indexSettings.getNodeSettings()));
         } else {
@@ -68,6 +70,7 @@ public class FsDirectoryFactory implements IndexStorePlugin.DirectoryFactory {
         Set<String> preLoadExtensions = new HashSet<>(
             indexSettings.getValue(IndexModule.INDEX_STORE_PRE_LOAD_SETTING));
         switch (type) {
+            // 一般用这个
             case HYBRIDFS:
                 // Use Lucene defaults
                 final FSDirectory primaryDirectory = FSDirectory.open(location, lockFactory);

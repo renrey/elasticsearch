@@ -60,7 +60,8 @@ public final class SharedGroupFactory {
     }
 
     public synchronized SharedGroup getHttpGroup() {
-        if (httpWorkerCount == 0) {
+        if (httpWorkerCount == 0) {// 默认0
+            // 初始创建group
             return getGenericGroup();
         } else {
             if (dedicatedHttpGroup == null) {
@@ -75,12 +76,15 @@ public final class SharedGroupFactory {
     private SharedGroup getGenericGroup() {
         if (genericGroup == null) {
             // 创建Netty的EventLoopGroup --- NioEventLoopGroup
+            // 默认线程数量-》核数*2
             EventLoopGroup eventLoopGroup = new NioEventLoopGroup(workerCount,
                 daemonThreadFactory(settings, TcpTransport.TRANSPORT_WORKER_THREAD_NAME_PREFIX));
             this.genericGroup = new RefCountedGroup(eventLoopGroup);
         } else {
             genericGroup.incRef();
         }
+        // 所以往原生netty group封装了2层
+        // SharedGroup->RefCountedGroup->NioEventLoopGroup
         return new SharedGroup(genericGroup);
     }
 

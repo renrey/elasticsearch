@@ -73,11 +73,13 @@ public class ContextIndexSearcher extends IndexSearcher implements Releasable {
                                  QueryCache queryCache, QueryCachingPolicy queryCachingPolicy,
                                  MutableQueryTimeout cancellable,
                                  boolean wrapWithExitableDirectoryReader) throws IOException {
+        // 是否需要扩展reader：默认需要，就是closeReader时执行cancellable
         super(wrapWithExitableDirectoryReader ? new ExitableDirectoryReader((DirectoryReader) reader, cancellable) : reader);
+        // 重新传入similarity、queryCache、queryCachingPolicy
         setSimilarity(similarity);
         setQueryCache(queryCache);
         setQueryCachingPolicy(queryCachingPolicy);
-        this.cancellable = cancellable;
+        this.cancellable = cancellable;// 扩展了
     }
 
     public void setProfiler(QueryProfiler profiler) {

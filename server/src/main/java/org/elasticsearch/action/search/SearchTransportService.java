@@ -285,6 +285,9 @@ public class SearchTransportService {
     }
 
     public static void registerRequestHandler(TransportService transportService, SearchService searchService) {
+        /**
+         * 绑定了内部Transport接口的处理handler
+         */
         transportService.registerRequestHandler(FREE_CONTEXT_SCROLL_ACTION_NAME, ThreadPool.Names.SAME, ScrollFreeContextRequest::new,
             (request, channel, task) -> {
                 boolean freed = searchService.freeReaderContext(request.id());
@@ -314,6 +317,8 @@ public class SearchTransportService {
 
         TransportActionProxy.registerProxyAction(transportService, DFS_ACTION_NAME, true, DfsSearchResult::new);
 
+        // 就是基础queryThenFetch的query阶段shard请求
+        // 线程池使用SAME共用
         transportService.registerRequestHandler(QUERY_ACTION_NAME, ThreadPool.Names.SAME, ShardSearchRequest::new,
             (request, channel, task) ->
                 searchService.executeQueryPhase(request, (SearchShardTask) task,
@@ -336,6 +341,7 @@ public class SearchTransportService {
             });
         TransportActionProxy.registerProxyAction(transportService, QUERY_SCROLL_ACTION_NAME, true, ScrollQuerySearchResult::new);
 
+        //
         transportService.registerRequestHandler(QUERY_FETCH_SCROLL_ACTION_NAME, ThreadPool.Names.SAME, InternalScrollSearchRequest::new,
             (request, channel, task) -> {
                 searchService.executeFetchPhase(request, (SearchShardTask) task,

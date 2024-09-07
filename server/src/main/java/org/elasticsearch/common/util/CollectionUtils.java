@@ -55,6 +55,7 @@ public class CollectionUtils {
             return list;
         }
 
+        // 取模
         int d = distance % list.size();
         if (d < 0) {
             d += list.size();

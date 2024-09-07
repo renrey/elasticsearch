@@ -41,6 +41,7 @@ import org.elasticsearch.transport.TransportService;
 import java.util.function.Predicate;
 
 /**
+ * 代表一个操作在masternode上执行
  * A base class for operations that needs to be performed on the master node.
  */
 public abstract class TransportMasterNodeAction<Request extends MasterNodeRequest<Request>, Response extends ActionResponse>
@@ -101,6 +102,7 @@ public abstract class TransportMasterNodeAction<Request extends MasterNodeReques
         if (task != null) {
             request.setParentTask(clusterService.localNode().getId(), task.getId());
         }
+        // 封装成一个异步操作，提交
         new AsyncSingleAction(task, request, listener).doStart(state);
     }
 
@@ -151,6 +153,7 @@ public abstract class TransportMasterNodeAction<Request extends MasterNodeReques
                                 delegatedListener.onFailure(t);
                             }
                         });
+                        // 提交线程池，执行master操作
                         threadPool.executor(executor)
                             .execute(ActionRunnable.wrap(delegate, l -> masterOperation(task, request, clusterState, l)));
                     }

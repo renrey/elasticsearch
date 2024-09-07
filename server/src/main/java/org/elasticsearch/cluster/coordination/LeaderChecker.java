@@ -90,10 +90,13 @@ public class LeaderChecker {
     LeaderChecker(final Settings settings, final TransportService transportService, final Consumer<Exception> onLeaderFailure,
                   NodeHealthService nodeHealthService) {
         this.settings = settings;
-        leaderCheckInterval = LEADER_CHECK_INTERVAL_SETTING.get(settings);
+        leaderCheckInterval = LEADER_CHECK_INTERVAL_SETTING.get(settings);// 间隔1s
         leaderCheckTimeout = LEADER_CHECK_TIMEOUT_SETTING.get(settings);
         leaderCheckRetryCount = LEADER_CHECK_RETRY_COUNT_SETTING.get(settings);
         this.transportService = transportService;
+        /**
+         * @see Coordinator#onLeaderFailure(Exception)
+         */
         this.onLeaderFailure = onLeaderFailure;
         this.nodeHealthService = nodeHealthService;
 
@@ -135,7 +138,7 @@ public class LeaderChecker {
         assert transportService.getLocalNode().equals(leader) == false;
         final CheckScheduler checkScheduler;
         if (leader != null) {
-            checkScheduler = new CheckScheduler(leader);
+            checkScheduler = new CheckScheduler(leader);// 创建
         } else {
             checkScheduler = null;
         }
@@ -144,6 +147,7 @@ public class LeaderChecker {
             previousChecker.close();
         }
         if (checkScheduler != null) {
+            // 这里启动
             checkScheduler.handleWakeUp();
         }
     }
@@ -172,10 +176,12 @@ public class LeaderChecker {
             logger.debug(message);
             throw new NodeHealthCheckFailureException(message);
         } else if (discoveryNodes.isLocalNodeElectedMaster() == false) {
+            // 自己不是leader，等于告诉对方错误leader
             logger.debug("rejecting leader check on non-master {}", request);
             throw new CoordinationStateRejectedException(
                 "rejecting leader check from [" + request.getSender() + "] sent to a node that is no longer the master");
         } else if (discoveryNodes.nodeExists(request.getSender()) == false) {
+            // 自己没这个node，说明对方需要重新join
             logger.debug("rejecting leader check from removed node: {}", request);
             throw new CoordinationStateRejectedException(
                 "rejecting leader check since [" + request.getSender() + "] has been removed from the cluster");
@@ -230,6 +236,7 @@ public class LeaderChecker {
                 actionName = LEADER_CHECK_ACTION_NAME;
                 transportRequest = new LeaderCheckRequest(transportService.getLocalNode());
             }
+            // 发送请求
             // TODO lag detection:
             // In the PoC, the leader sent its current version to the follower in the response to a LeaderCheck, so the follower
             // could detect if it was lagging. We'd prefer this to be implemented on the leader, so the response is just
@@ -245,6 +252,7 @@ public class LeaderChecker {
                         }
 
                         failureCountSinceLastSuccess.set(0);
+                        // 下次调度
                         scheduleNextWakeUp(); // logs trace message indicating success
                     }
 
@@ -255,6 +263,10 @@ public class LeaderChecker {
                             return;
                         }
 
+                        // leaderFailed认为不是leader了
+                        /**
+                         * @see Coordinator#onLeaderFailure(Exception)
+                         */
                         if (exp instanceof ConnectTransportException || exp.getCause() instanceof ConnectTransportException) {
                             logger.debug(new ParameterizedMessage(
                                 "leader [{}] disconnected during check", leader), exp);

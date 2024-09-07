@@ -125,6 +125,10 @@ public class InternalEngine extends Engine {
 
     private final IndexWriter indexWriter;
 
+    /**
+     * 这个2个Reader使用lucene本身提供ReferenceManager
+     * 保证获取ElasticsearchDirectoryReader（lucene的indexReader）线程安全
+     */
     private final ExternalReaderManager externalReaderManager;
     private final ElasticsearchReaderManager internalReaderManager;
 
@@ -208,18 +212,26 @@ public class InternalEngine extends Engine {
             engineConfig.getIndexSettings().getTranslogRetentionTotalFiles()
         );
         store.incRef();
-        IndexWriter writer = null;
-        Translog translog = null;
+        // 就看这里就是5个对象很重要
+        IndexWriter writer = null;// 写入lucene的IndexWriter
+        Translog translog = null;// translog 恢复回放日志
+        // 2个Reader获取工厂
         ExternalReaderManager externalReaderManager = null;
         ElasticsearchReaderManager internalReaderManager = null;
-        EngineMergeScheduler scheduler = null;
+        EngineMergeScheduler scheduler = null; //merge调度器
+
+
         boolean success = false;
         try {
             this.lastDeleteVersionPruneTimeMSec = engineConfig.getThreadPool().relativeTimeInMillis();
+            /**
+             * merge操作调度器
+             */
             mergeScheduler = scheduler = new EngineMergeScheduler(engineConfig.getShardId(), engineConfig.getIndexSettings());
             throttle = new IndexThrottle();
             try {
                 trimUnsafeCommits(engineConfig);
+                // 加载现有的translog文件
                 translog = openTranslog(engineConfig, translogDeletionPolicy, engineConfig.getGlobalCheckpointSupplier(),
                     seqNo -> {
                         final LocalCheckpointTracker tracker = getLocalCheckpointTracker();
@@ -253,13 +265,19 @@ public class InternalEngine extends Engine {
                     throw e;
                 }
             }
+            /**
+             * 创建内、外部请求处理使用的lucene的IndexReader的获取工厂
+             * 这里会创建ElasticsearchDirectoryReader
+             */
             externalReaderManager = createReaderManager(new RefreshWarmerListener(logger, isClosed, engineConfig));
             internalReaderManager = externalReaderManager.internalReaderManager;
             this.internalReaderManager = internalReaderManager;
             this.externalReaderManager = externalReaderManager;
+
             internalReaderManager.addListener(versionMap);
             assert pendingTranslogRecovery.get() == false : "translog recovery can't be pending before we set it";
             // don't allow commits until we are done with recovering
+            // 更新可以恢复translog标志
             pendingTranslogRecovery.set(true);
             for (ReferenceManager.RefreshListener listener: engineConfig.getExternalRefreshListener()) {
                 this.externalReaderManager.addListener(listener);
@@ -355,6 +373,7 @@ public class InternalEngine extends Engine {
             // we simply run a blocking refresh on the internal reference manager and then steal it's reader
             // it's a save operation since we acquire the reader which incs it's reference but then down the road
             // steal it by calling incRef on the "stolen" reader
+            // 執行内部
             internalReaderManager.maybeRefreshBlocking();
             final ElasticsearchDirectoryReader newReader = internalReaderManager.acquire();
             if (isWarmedUp == false || newReader != referenceToRefresh) {
@@ -380,6 +399,7 @@ public class InternalEngine extends Engine {
 
         @Override
         protected boolean tryIncRef(ElasticsearchDirectoryReader reference) {
+            // 引用+1
             return reference.tryIncRef();
         }
 
@@ -390,6 +410,7 @@ public class InternalEngine extends Engine {
 
         @Override
         protected void decRef(ElasticsearchDirectoryReader reference) throws IOException {
+            // 引用-1
             reference.decRef();
         }
     }
@@ -457,12 +478,15 @@ public class InternalEngine extends Engine {
 
     @Override
     public InternalEngine recoverFromTranslog(TranslogRecoveryRunner translogRecoveryRunner, long recoverUpToSeqNo) throws IOException {
+        // 申请读锁
+        // 代表读操作都可以进行（但可能数据不正确），有写操作直接被阻塞住
         try (ReleasableLock lock = readLock.acquire()) {
             ensureOpen();
             if (pendingTranslogRecovery.get() == false) {
                 throw new IllegalStateException("Engine has already been recovered");
             }
             try {
+                // 执行
                 recoverFromTranslogInternal(translogRecoveryRunner, recoverUpToSeqNo);
             } catch (Exception e) {
                 try {
@@ -485,9 +509,12 @@ public class InternalEngine extends Engine {
 
     private void recoverFromTranslogInternal(TranslogRecoveryRunner translogRecoveryRunner, long recoverUpToSeqNo) throws IOException {
         final int opsRecovered;
+        // 获取本地checkpoint
         final long localCheckpoint = getProcessedLocalCheckpoint();
+        // 可回放（本地<目标）
         if (localCheckpoint < recoverUpToSeqNo) {
             try (Translog.Snapshot snapshot = translog.newSnapshot(localCheckpoint + 1, recoverUpToSeqNo)) {
+                // 执行外部定义的回放逻辑
                 opsRecovered = translogRecoveryRunner.run(this, snapshot);
             } catch (Exception e) {
                 throw new EngineException(shardId, "failed to recover from translog", e);
@@ -502,6 +529,8 @@ public class InternalEngine extends Engine {
         logger.trace(() -> new ParameterizedMessage(
                 "flushing post recovery from translog: ops recovered [{}], current translog generation [{}]",
                 opsRecovered, translog.currentFileGeneration()));
+
+        // flush 清空translog
         flush(false, true);
         translog.trimUnreferencedReaders();
     }
@@ -630,11 +659,18 @@ public class InternalEngine extends Engine {
         ElasticsearchReaderManager internalReaderManager = null;
         try {
             try {
+                /**
+                 * 初始创建ElasticsearchDirectoryReader
+                 * FilterDirectoryReader
+                 */
                 final ElasticsearchDirectoryReader directoryReader =
                     ElasticsearchDirectoryReader.wrap(DirectoryReader.open(indexWriter), shardId);
+
                 internalReaderManager = new ElasticsearchReaderManager(directoryReader,
                     new RamAccountingRefreshListener(engineConfig.getCircuitBreakerService()));
+                // 读取最后1个 commit（已刷盘） segment文件（最大编号）
                 lastCommittedSegmentInfos = store.readLastCommittedSegmentsInfo();
+                // 外部跟内部使用同一个reader
                 ExternalReaderManager externalReaderManager = new ExternalReaderManager(internalReaderManager, externalRefreshListener);
                 success = true;
                 return externalReaderManager;
@@ -657,6 +693,7 @@ public class InternalEngine extends Engine {
     private GetResult getFromTranslog(Get get, Translog.Index index, DocumentMapper mapper,
                                       Function<Searcher, Searcher> searcherWrapper) throws IOException {
         assert get.isReadFromTranslog();
+        // READER
         final SingleDocDirectoryReader inMemoryReader = new SingleDocDirectoryReader(shardId, index, mapper, config().getAnalyzer());
         final Engine.Searcher searcher = new Engine.Searcher("realtime_get", ElasticsearchDirectoryReader.wrap(inMemoryReader, shardId),
             config().getSimilarity(), config().getQueryCache(), config().getQueryCachingPolicy(), inMemoryReader);
@@ -883,9 +920,11 @@ public class InternalEngine extends Engine {
      * @return the sequence number
      */
     long doGenerateSeqNoForOperation(final Operation operation) {
+        // 自增
         return localCheckpointTracker.generateSeqNo();
     }
 
+    // 新增、修改记录
     @Override
     public IndexResult index(Index index) throws IOException {
         assert Objects.equals(index.uid().field(), IdFieldMapper.NAME) : index.uid().field();
@@ -894,9 +933,11 @@ public class InternalEngine extends Engine {
             ensureOpen();
             assert assertIncomingSequenceNumber(index.origin(), index.seqNo());
             int reservedDocs = 0;
+            // 1. 准备写入lucene
             try (Releasable ignored = versionMap.acquireLock(index.uid().bytes());
                 Releasable indexThrottle = doThrottle ? throttle.acquireThrottle() : () -> {}) {
                 lastWriteNanos = index.startTime();
+                // append追加写优化
                 /* A NOTE ABOUT APPEND ONLY OPTIMIZATIONS:
                  * if we have an autoGeneratedID that comes into the engine we can potentially optimize
                  * and just use addDocument instead of updateDocument and skip the entire version and index lookupVersion across the board.
@@ -923,6 +964,7 @@ public class InternalEngine extends Engine {
                  *  if A arrives on the shard first we use addDocument since maxUnsafeAutoIdTimestamp is < 10. A` will then just be skipped
                  *  or calls updateDocument.
                  */
+                // 这里面主shard会判断版本冲突
                 final IndexingStrategy plan = indexingStrategyForOperation(index);
                 reservedDocs = plan.reservedDocs;
 
@@ -933,7 +975,11 @@ public class InternalEngine extends Engine {
                     assert indexResult.getResultType() == Result.Type.FAILURE : indexResult.getResultType();
                 } else {
                     // generate or register sequence number
+                    // (1) 生成seqNo
+                    // 主shard执行
                     if (index.origin() == Operation.Origin.PRIMARY) {
+                        // translog使用操作信息对象
+                        // （1）generateSeqNoForOperationOnPrimary: 生成seqNo，自增+1
                         index = new Index(index.uid(), index.parsedDoc(), generateSeqNoForOperationOnPrimary(index), index.primaryTerm(),
                             index.version(), index.versionType(), index.origin(), index.startTime(), index.getAutoGeneratedIdTimestamp(),
                             index.isRetry(), index.getIfSeqNo(), index.getIfPrimaryTerm());
@@ -943,23 +989,28 @@ public class InternalEngine extends Engine {
                             advanceMaxSeqNoOfUpdatesOrDeletesOnPrimary(index.seqNo());
                         }
                     } else {
+                        // 非主shard 就是更新本地内存，代表目前seqNo，可以被检索
                         markSeqNoAsSeen(index.seqNo());
                     }
 
                     assert index.seqNo() >= 0 : "ops should have an assigned seq no.; origin: " + index.origin();
 
                     if (plan.indexIntoLucene || plan.addStaleOpToLucene) {
-                        // 写入lucene
+                        // （2）写入lucene！！！
                         indexResult = indexIntoLucene(index, plan);
                     } else {
                         indexResult = new IndexResult(
                             plan.versionForIndexing, index.primaryTerm(), index.seqNo(), plan.currentNotFoundOrDeleted);
                     }
                 }
+                // 用户写请求、集群同步 add translog -》如恢复（使用translog）操作，不用写入translog-
                 if (index.origin().isFromTranslog() == false) {
                     final Translog.Location location;
+                    // 2. add 新增的translog
                     if (indexResult.getResultType() == Result.Type.SUCCESS) {
-                        // 写入translog
+                        /**
+                         * 添加translog！！！
+                         */
                         location = translog.add(new Translog.Index(index, indexResult));
                     } else if (indexResult.getSeqNo() != SequenceNumbers.UNASSIGNED_SEQ_NO) {
                         // if we have document failure, record it as a no-op in the translog and Lucene with the generated seq_no
@@ -983,7 +1034,7 @@ public class InternalEngine extends Engine {
                     localCheckpointTracker.markSeqNoAsPersisted(indexResult.getSeqNo());
                 }
                 indexResult.setTook(System.nanoTime() - index.startTime());
-                indexResult.freeze();
+                indexResult.freeze();// 结果不能改了
                 return indexResult;
             } finally {
                 releaseInFlightDocs(reservedDocs);
@@ -1039,9 +1090,12 @@ public class InternalEngine extends Engine {
     }
 
     protected IndexingStrategy indexingStrategyForOperation(final Index index) throws IOException {
+        // 当前操作主shard处理请求
         if (index.origin() == Operation.Origin.PRIMARY) {
+            // 版本冲突判断
             return planIndexingAsPrimary(index);
         } else {
+            // 副本shard 、恢复shard操作
             // non-primary mode (i.e., replica or recovery)
             return planIndexingAsNonPrimary(index);
         }
@@ -1079,6 +1133,7 @@ public class InternalEngine extends Engine {
                     index.getIfSeqNo(), index.getIfPrimaryTerm(), SequenceNumbers.UNASSIGNED_SEQ_NO,
                     SequenceNumbers.UNASSIGNED_PRIMARY_TERM);
                 plan = IndexingStrategy.skipDueToVersionConflict(e, true, currentVersion);
+            // 判断IfSeqNo、IfPrimaryTerm 版本冲突！！！
             } else if (index.getIfSeqNo() != SequenceNumbers.UNASSIGNED_SEQ_NO && (
                 versionValue.seqNo != index.getIfSeqNo() || versionValue.term != index.getIfPrimaryTerm()
             )) {
@@ -1095,6 +1150,7 @@ public class InternalEngine extends Engine {
                 if (reserveError != null) {
                     plan = IndexingStrategy.failAsTooManyDocs(reserveError);
                 } else {
+                    // 正常处理
                     plan = IndexingStrategy.processNormally(currentNotFoundOrDeleted,
                         canOptimizeAddDocument ? 1L : index.versionType().updateVersion(currentVersion, index.version()),
                         reservingDocs);
@@ -1116,16 +1172,24 @@ public class InternalEngine extends Engine {
         index.parsedDoc().updateSeqID(index.seqNo(), index.primaryTerm());
         index.parsedDoc().version().setLongValue(plan.versionForIndexing);
         try {
-            if (plan.addStaleOpToLucene) {
+            // 下面就是调用indexWriter的api
+            if (plan.addStaleOpToLucene) {// 正常操作这个是false
                 addStaleDocs(index.docs(), indexWriter);
-            } else if (plan.useLuceneUpdateDocument) {
+            } else if (plan.useLuceneUpdateDocument) {// 就是已有存在lucene的seg，就修改 -》因为要处理删除doc
                 assert assertMaxSeqNoOfUpdatesIsAdvanced(index.uid(), index.seqNo(), true, true);
+                // 修改
                 updateDocs(index.uid(), index.docs(), indexWriter);
-            } else {
+            } else {// 未有lucene seg，做新增操作 -》第一次进行lucene，不可能进行删除
                 // document does not exists, we can optimize for create, but double check if assertions are running
                 assert assertDocDoesNotExist(index, canOptimizeAddDocument(index) == false);
+                // 新增文档
                 addDocs(index.docs(), indexWriter);
             }
+            /**
+             * lucene中的操作流程：
+             * 1. 申请1个dwpt
+             * 2. 把本次 updateDocs()、addDocs()操作的doc集合，更新到这个dwpt -》buffer
+             */
             return new IndexResult(plan.versionForIndexing, index.primaryTerm(), index.seqNo(), plan.currentNotFoundOrDeleted);
         } catch (Exception ex) {
             if (ex instanceof AlreadyClosedException == false &&
@@ -1241,6 +1305,7 @@ public class InternalEngine extends Engine {
         public static IndexingStrategy skipDueToVersionConflict(
             VersionConflictEngineException e, boolean currentNotFoundOrDeleted, long currentVersion) {
             final IndexResult result = new IndexResult(e, currentVersion);
+            // 看着有版本冲突，就不索引到lucene
             return new IndexingStrategy(currentNotFoundOrDeleted, false, false, false, Versions.NOT_FOUND, 0, result);
         }
 
@@ -1287,10 +1352,12 @@ public class InternalEngine extends Engine {
     }
 
     private void updateDocs(final Term uid, final List<ParseContext.Document> docs, final IndexWriter indexWriter) throws IOException {
-        if (softDeleteEnabled) {
+        if (softDeleteEnabled) {// 逻辑删除
             if (docs.size() > 1) {
+                // 批量
                 indexWriter.softUpdateDocuments(uid, docs, softDeletesField);
             } else {
+                // 单条
                 indexWriter.softUpdateDocument(uid, docs.get(0), softDeletesField);
             }
         } else {
@@ -1340,6 +1407,7 @@ public class InternalEngine extends Engine {
                         plan.versionOfDeletion, delete.primaryTerm(), delete.seqNo(), plan.currentlyDeleted == false);
                 }
             }
+            // 2. add删除文档的translog
             if (delete.origin().isFromTranslog() == false && deleteResult.getResultType() == Result.Type.SUCCESS) {
                 final Translog.Location location = translog.add(new Translog.Delete(delete, deleteResult));
                 deleteResult.setTranslogLocation(location);
@@ -1659,6 +1727,7 @@ public class InternalEngine extends Engine {
 
     @Override
     public void refresh(String source) throws EngineException {
+        // 需要阻塞的
         refresh(source, SearcherScope.EXTERNAL, true);
     }
 
@@ -1679,12 +1748,25 @@ public class InternalEngine extends Engine {
                 try {
                     // even though we maintain 2 managers we really do the heavy-lifting only once.
                     // the second refresh will only do the extra work we have to do for warming caches etc.
+
+                    // 1. 根据scope获取 不同的manager
+                    // 正常的refresh：externalReaderManager 其他例如写入index buffer：internalReaderManager
                     ReferenceManager<ElasticsearchDirectoryReader> referenceManager = getReferenceManager(scope);
                     // it is intentional that we never refresh both internal / external together
+                    // 阻塞执行refresh
                     if (block) {
+                        // 必须执行成功
+                        // 这个是lucene的refresh -> 執行refreshIfNeeded后，交換新老引用
+                        /**
+                         * 底層的
+                         * @see org.elasticsearch.index.engine.ElasticsearchReaderManager#refreshIfNeeded(org.elasticsearch.common.lucene.index.ElasticsearchDirectoryReader)
+                         * 包裝的
+                         * @see  ExternalReaderManager#refreshIfNeeded(ElasticsearchDirectoryReader)
+                         */
                         referenceManager.maybeRefreshBlocking();
                         refreshed = true;
                     } else {
+                        // 非阻塞执行：申请锁失败就不执行
                         refreshed = referenceManager.maybeRefresh();
                     }
                 } finally {
@@ -1719,6 +1801,7 @@ public class InternalEngine extends Engine {
 
     @Override
     public void writeIndexingBuffer() throws EngineException {
+        // 写buffer
         refresh("write indexing buffer", SearcherScope.INTERNAL, false);
     }
 
@@ -1821,6 +1904,7 @@ public class InternalEngine extends Engine {
             || localCheckpointTracker.getProcessedCheckpoint() == localCheckpointTracker.getMaxSeqNo();
     }
 
+    // flush操作
     @Override
     public CommitId flush(boolean force, boolean waitIfOngoing) throws EngineException {
         ensureOpen();
@@ -1855,17 +1939,21 @@ public class InternalEngine extends Engine {
                                 lastCommittedSegmentInfos.userData.get(SequenceNumbers.LOCAL_CHECKPOINT_KEY))) {
                     ensureCanFlush();
                     try {
+                        // 1. 开启新的translog文件
                         translog.rollGeneration();
                         logger.trace("starting commit for flush; commitTranslog=true");
+                        // 2. COMMIT SEGMENT (segment 文件刷盘)
                         commitIndexWriter(indexWriter, translog, null);
                         logger.trace("finished commit for flush");
 
                         // a temporary debugging to investigate test failure - issue#32827. Remove when the issue is resolved
                         logger.debug("new commit on flush, hasUncommittedChanges:{}, force:{}, shouldPeriodicallyFlush:{}",
                             hasUncommittedChanges, force, shouldPeriodicallyFlush);
-
+                        // 3. 执行1次refresh
                         // we need to refresh in order to clear older version values
                         refresh("version_table_flush", SearcherScope.INTERNAL, true);
+
+                        // 4. 开始删除 translog文件
                         translog.trimUnreferencedReaders();
                     } catch (AlreadyClosedException e) {
                         failOnTragicEvent(e);
@@ -1873,9 +1961,11 @@ public class InternalEngine extends Engine {
                     } catch (Exception e) {
                         throw new FlushFailedEngineException(shardId, e);
                     }
+                    // 重新读取磁盘中最新commit的segment
                     refreshLastCommittedSegmentInfos();
 
                 }
+                // 最后commit的segment id -》代表更新了刷盘了
                 newCommitId = lastCommittedSegmentInfos.getId();
             } catch (FlushFailedEngineException ex) {
                 maybeFailEngine("flush", ex);
@@ -2194,14 +2284,17 @@ public class InternalEngine extends Engine {
     @Override
     public List<Segment> segments(boolean verbose) {
         try (ReleasableLock lock = readLock.acquire()) {
+            // 所有segment获取
             Segment[] segmentsArr = getSegmentInfo(lastCommittedSegmentInfos, verbose);
 
             // fill in the merges flag
             Set<OnGoingMerge> onGoingMerges = mergeScheduler.onGoingMerges();
             for (OnGoingMerge onGoingMerge : onGoingMerges) {
                 for (SegmentCommitInfo segmentInfoPerCommit : onGoingMerge.getMergedSegments()) {
+                    // 每个segment
                     for (Segment segment : segmentsArr) {
                         if (segment.getName().equals(segmentInfoPerCommit.info.name)) {
+                            // segment mergeId设置
                             segment.mergeId = onGoingMerge.getId();
                             break;
                         }
@@ -2285,15 +2378,16 @@ public class InternalEngine extends Engine {
     IndexWriter createWriter(Directory directory, IndexWriterConfig iwc) throws IOException {
         if (Assertions.ENABLED) {
             return new AssertingIndexWriter(directory, iwc);
-        } else {
+        } else {// 默认这个
             return new IndexWriter(directory, iwc);
         }
     }
 
+    // 创建IndexWriterConfig
     private IndexWriterConfig getIndexWriterConfig() {
         final IndexWriterConfig iwc = new IndexWriterConfig(engineConfig.getAnalyzer());
         iwc.setCommitOnClose(false); // we by default don't commit on close
-        iwc.setOpenMode(IndexWriterConfig.OpenMode.APPEND);
+        iwc.setOpenMode(IndexWriterConfig.OpenMode.APPEND); //证明index文件已创建
         iwc.setIndexDeletionPolicy(combinedDeletionPolicy);
         // with tests.verbose, lucene sets this up: plumb to align with filesystem stream
         boolean verbose = false;
@@ -2302,6 +2396,7 @@ public class InternalEngine extends Engine {
         } catch (Exception ignore) {
         }
         iwc.setInfoStream(verbose ? InfoStream.getDefault() : new LoggerInfoStream(logger));
+        // 把自定义mergeScheduler赋给lucene实例
         iwc.setMergeScheduler(mergeScheduler);
         // Give us the opportunity to upgrade old segments while performing
         // background merges
@@ -2320,6 +2415,9 @@ public class InternalEngine extends Engine {
             // to enable it.
             mergePolicy = new ShuffleForcedMergePolicy(mergePolicy);
         }
+        /**
+         * merge策略
+         */
         iwc.setMergePolicy(new ElasticsearchMergePolicy(mergePolicy));
         iwc.setSimilarity(engineConfig.getSimilarity());
         iwc.setRAMBufferSizeMB(engineConfig.getIndexingBufferSize().getMbFrac());
@@ -2503,6 +2601,7 @@ public class InternalEngine extends Engine {
                  * of invocation of the commit data iterator (which occurs after all documents have been flushed to Lucene).
                  */
                 final Map<String, String> commitData = new HashMap<>(7);
+                // 保存translog的uuid
                 commitData.put(Translog.TRANSLOG_UUID_KEY, translog.getTranslogUUID());
                 commitData.put(SequenceNumbers.LOCAL_CHECKPOINT_KEY, Long.toString(localCheckpoint));
                 if (syncId != null) {
@@ -2522,6 +2621,8 @@ public class InternalEngine extends Engine {
                 return commitData.entrySet().iterator();
             });
             shouldPeriodicallyFlushAfterBigMerge.set(false);
+
+            //  2. lucene的 IndexWriter commit ！！！（iw就是生成segment对象的）
             writer.commit();
         } catch (final Exception ex) {
             try {
@@ -2728,6 +2829,7 @@ public class InternalEngine extends Engine {
             if (startingSeqNo > currentLocalCheckpoint) {
                 return true;
             }
+            // seqNo生成器加载最后seqNo
             final LocalCheckpointTracker tracker = new LocalCheckpointTracker(startingSeqNo, startingSeqNo - 1);
             try (Translog.Snapshot snapshot = getTranslog().newSnapshot(startingSeqNo, Long.MAX_VALUE)) {
                 Translog.Operation operation;

@@ -211,6 +211,7 @@ public class TransportSearchAction extends HandledTransportAction<SearchRequest,
     @Override
     protected void doExecute(Task task, SearchRequest searchRequest, ActionListener<SearchResponse> listener) {
         // 执行
+        // 注意使用了searchAsyncAction！！！
         executeRequest(task, searchRequest, this::searchAsyncAction, listener);
     }
 
@@ -261,6 +262,8 @@ public class TransportSearchAction extends HandledTransportAction<SearchRequest,
         }, listener);
     }
 
+
+    // SearchAsyncActionProvider: SearchAsyncAction 就是代表异步执行search请求的操作对象，代表不是在当前TransportAction的线程执行，而是给别的线程池异步执行
     private void executeRequest(Task task,
                                 SearchRequest original,
                                 SearchAsyncActionProvider searchAsyncActionProvider,
@@ -269,30 +272,38 @@ public class TransportSearchAction extends HandledTransportAction<SearchRequest,
         final SearchTimeProvider timeProvider =
             new SearchTimeProvider(original.getOrCreateAbsoluteStartMillis(), relativeStartNanos, System::nanoTime);
         /**
-         * 重写请求后的操作，实际就是执行查询操作fetch
+         * 定义了1个操作函数
+         * 1. 重写请求 2. 执行重新请求
+         *   实际这个作用就是执行查询操作fetch
          */
         ActionListener<SearchRequest> rewriteListener = ActionListener.wrap(rewritten -> {
+            // rewritten就是重写的Builder（original本身）
             final ClusterState clusterState = clusterService.state();
             final SearchContextId searchContext;
             final Map<String, OriginalIndices> remoteClusterIndices;
             if (rewritten.pointInTimeBuilder() != null) {
+                // CTX生產
                 searchContext = rewritten.pointInTimeBuilder().getSearchContextId(namedWriteableRegistry);
                 remoteClusterIndices = getIndicesFromSearchContexts(searchContext, rewritten.indicesOptions());
-            } else {
+            } else {// 應該默认不传pit属性
                 searchContext = null;
                 remoteClusterIndices = remoteClusterService.groupIndices(rewritten.indicesOptions(),
                     rewritten.indices(), idx -> indexNameExpressionResolver.hasIndexAbstraction(idx, clusterState));
             }
+            // 远程集群index集合中移除本地集群的key
+            // localIndices 就是本地集群的index
             OriginalIndices localIndices = remoteClusterIndices.remove(RemoteClusterAware.LOCAL_CLUSTER_GROUP_KEY);
 
             /**
-             * 没有远程的index，在本地
+             * 没有远程的index，在本地集群 -》一般执行非ccs
              */
             if (remoteClusterIndices.isEmpty()) {
-                // 本地检索
+                // 本地集群检索
                 executeLocalSearch(
                     task, timeProvider, rewritten, localIndices, clusterState, listener, searchContext, searchAsyncActionProvider);
             } else {
+                // 这里就是要夸集群检索
+
                 if (shouldMinimizeRoundtrips(rewritten)) {
                     final TaskId parentTaskId = task.taskInfo(clusterService.localNode().getId(), false).getTaskId();
                     ccsRemoteReduce(parentTaskId, rewritten, localIndices, remoteClusterIndices, timeProvider,
@@ -332,8 +343,10 @@ public class TransportSearchAction extends HandledTransportAction<SearchRequest,
             }
         }, listener::onFailure);
         /**
-         * !!!
-         * original:request对象
+         * 执行上面的listener，实际就是重写请求内容、异步发送请求
+         * rewriteAndFetch就是描述这个操作的
+         *
+         * original: 原来的SearchRequest对象
          *生成上下文：searchService.getRewriteContext(timeProvider::getAbsoluteStartMillis)，当前集群信息等配置
          */
         Rewriteable.rewriteAndFetch(original, searchService.getRewriteContext(timeProvider::getAbsoluteStartMillis),
@@ -503,6 +516,7 @@ public class TransportSearchAction extends HandledTransportAction<SearchRequest,
                                     SearchAsyncActionProvider searchAsyncActionProvider) {
         /**
          * remoteConnections: 返回null
+         * 本地：所以无连接
          */
         executeSearch((SearchTask)task, timeProvider, searchRequest, localIndices, Collections.emptyList(),
             (clusterName, nodeId) -> null, clusterState, Collections.emptyMap(), listener, SearchResponse.Clusters.EMPTY,
@@ -624,31 +638,47 @@ public class TransportSearchAction extends HandledTransportAction<SearchRequest,
         final Map<String, AliasFilter> aliasFilter;
 
         final String[] concreteLocalIndices;
+        /**
+         * 生成localShardIterators： 即本地已知的分片
+         */
         if (searchContext != null) {
             assert searchRequest.pointInTimeBuilder() != null;
             aliasFilter = searchContext.aliasFilter();
             concreteLocalIndices = localIndices == null ? new String[0] : localIndices.indices();
+            // 就是ctx已有shard，直接使用
             localShardIterators = getLocalLocalShardsIteratorFromPointInTime(clusterState, localIndices,
                 searchRequest.getLocalClusterAlias(), searchContext, searchRequest.pointInTimeBuilder().getKeepAlive());
         } else {
+            // 正常本地集群检索 是没ctx传入的
+            // 看着下面对各种使用的对象进行初始化
+
             final Index[] indices = resolveLocalIndices(localIndices, clusterState, timeProvider);
+            // routing、indices参数
             Map<String, Set<String>> routingMap = indexNameExpressionResolver.resolveSearchRouting(clusterState, searchRequest.routing(),
                 searchRequest.indices());
             routingMap = routingMap == null ? Collections.emptyMap() : Collections.unmodifiableMap(routingMap);
+            // index名字集合
             concreteLocalIndices = new String[indices.length];
             for (int i = 0; i < indices.length; i++) {
                 concreteLocalIndices[i] = indices[i].getName();
             }
+            // 对集群每个node的连接都是1个key，应该统计对每个node的发送的正在search请求数
             Map<String, Long> nodeSearchCounts = searchTransportService.getPendingSearchRequests();
+            // 从clusterService获取
             GroupShardsIterator<ShardIterator> localShardRoutings = clusterService.operationRouting().searchShards(clusterState,
                 concreteLocalIndices, routingMap, searchRequest.preference(),
                 searchService.getResponseCollectorService(), nodeSearchCounts);
+            // 生成SearchShardIterator集合（即每个对应index里的1种shard）
             localShardIterators = StreamSupport.stream(localShardRoutings.spliterator(), false)
                 .map(it -> new SearchShardIterator(
                     searchRequest.getLocalClusterAlias(), it.shardId(), it.getShardRoutings(), localIndices))
                 .collect(Collectors.toList());
             aliasFilter = buildPerIndexAliasFilter(searchRequest, clusterState, indices, remoteAliasMap);
         }
+
+        /**
+         * 合并本地已知分片与远程的（ccs）：得到最终分片
+         */
         final GroupShardsIterator<SearchShardIterator> shardIterators = mergeShardsIterators(localShardIterators, remoteShardIterators);
 
         failIfOverShardCountLimit(clusterService, shardIterators.size());
@@ -681,16 +711,19 @@ public class TransportSearchAction extends HandledTransportAction<SearchRequest,
          */
         BiFunction<String, String, Transport.Connection> connectionLookup = buildConnectionLookup(searchRequest.getLocalClusterAlias(),
             nodes::get, remoteConnections, searchTransportService::getConnection);
+        // 异步执行search线程池-》就是默认的search线程池
         final Executor asyncSearchExecutor = asyncSearchExecutor(concreteLocalIndices, clusterState);
+        // 是否需要prefilter，正常应该不需要
         final boolean preFilterSearchShards = shouldPreFilterSearchShards(clusterState, searchRequest, concreteLocalIndices,
             localShardIterators.size() + remoteShardIterators.size());
         /**
-         * 提交请求异步执行
+         * asyncSearchAction：生成AsyncAction异步对象
+         * start()：提交请求到线程池异步执行
          *
          * searchAsyncActionProvider：
          * @see TransportSearchAction#searchAsyncAction(SearchTask, SearchRequest, Executor, GroupShardsIterator, SearchTimeProvider, BiFunction, ClusterState, Map, Map, ActionListener, boolean, ThreadPool, SearchResponse.Clusters)
          *
-         *QUERY_THEN_FETCH的action对象
+         * QUERY_THEN_FETCH的action对象
          * @see SearchQueryThenFetchAsyncAction
          * DFS_QUERY_THEN_FETCH
          * @see org.elasticsearch.action.search.SearchDfsQueryThenFetchAsyncAction
@@ -753,9 +786,10 @@ public class TransportSearchAction extends HandledTransportAction<SearchRequest,
         if (preFilterShardSize == null
                 && (hasReadOnlyIndices(indices, clusterState) || hasPrimaryFieldSort(source))) {
             preFilterShardSize = 1;
-        } else if (preFilterShardSize == null) {
+        } else if (preFilterShardSize == null) {// 默认128
             preFilterShardSize = SearchRequest.DEFAULT_PRE_FILTER_SHARD_SIZE;
         }
+        // 大概就是QUERY_THEN_FETCH下，preFilterShardSize小于 需要的shard数量
         return searchRequest.searchType() == QUERY_THEN_FETCH // we can't do this for DFS it needs to fan out to all shards all the time
                     && (SearchService.canRewriteToMatchNone(source) || hasPrimaryFieldSort(source))
                     && preFilterShardSize < numShards;
@@ -831,6 +865,7 @@ public class TransportSearchAction extends HandledTransportAction<SearchRequest,
 
             /**
              * query phrase的获取到的结果处理函数
+             * numShards(分片数) = shardIterators.size()
              */
             final QueryPhaseResultConsumer queryResultConsumer = searchPhaseController.newSearchPhaseResults(executor,
                 circuitBreaker, task.getProgressListener(), searchRequest, shardIterators.size(),
@@ -956,9 +991,11 @@ public class TransportSearchAction extends HandledTransportAction<SearchRequest,
                                                                                 String localClusterAlias,
                                                                                 SearchContextId searchContext,
                                                                                 TimeValue keepAlive) {
+        // 复用context已知的shard
         final List<SearchShardIterator> iterators = new ArrayList<>(searchContext.shards().size());
         for (Map.Entry<ShardId, SearchContextIdForNode> entry : searchContext.shards().entrySet()) {
             final SearchContextIdForNode perNode = entry.getValue();
+            // 没有ClusterAlias的
             if (Strings.isEmpty(perNode.getClusterAlias())) {
                 final ShardId shardId = entry.getKey();
                 final ShardIterator shards = OperationRouting.getShards(clusterState, shardId);
@@ -971,6 +1008,7 @@ public class TransportSearchAction extends HandledTransportAction<SearchRequest,
                         }
                     }
                 }
+                // 加入到迭代器集合中
                 iterators.add(new SearchShardIterator(localClusterAlias, shardId, targetNodes, originalIndices,
                     perNode.getSearchContextId(), keepAlive));
             }

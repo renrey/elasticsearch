@@ -56,15 +56,19 @@ public class ElectionSchedulerFactory {
      * Each election lasts up to ELECTION_DURATION_SETTING.
      */
 
+    // 初始时间：最大100ms，最大10s
     public static final Setting<TimeValue> ELECTION_INITIAL_TIMEOUT_SETTING = Setting.timeSetting(ELECTION_INITIAL_TIMEOUT_SETTING_KEY,
         TimeValue.timeValueMillis(100), TimeValue.timeValueMillis(1), TimeValue.timeValueSeconds(10), Property.NodeScope);
 
+    // 认为错误时间：默认100s，最小1ms，最大60s
     public static final Setting<TimeValue> ELECTION_BACK_OFF_TIME_SETTING = Setting.timeSetting(ELECTION_BACK_OFF_TIME_SETTING_KEY,
         TimeValue.timeValueMillis(100), TimeValue.timeValueMillis(1), TimeValue.timeValueSeconds(60), Property.NodeScope);
 
+    // 最大超时：默认10s，最小200ms，最大390s
     public static final Setting<TimeValue> ELECTION_MAX_TIMEOUT_SETTING = Setting.timeSetting(ELECTION_MAX_TIMEOUT_SETTING_KEY,
         TimeValue.timeValueSeconds(10), TimeValue.timeValueMillis(200), TimeValue.timeValueSeconds(300), Property.NodeScope);
 
+    // 选举持续时间：默认500ms，最大300s
     public static final Setting<TimeValue> ELECTION_DURATION_SETTING = Setting.timeSetting(ELECTION_DURATION_SETTING_KEY,
         TimeValue.timeValueMillis(500), TimeValue.timeValueMillis(1), TimeValue.timeValueSeconds(300), Property.NodeScope);
 
@@ -98,7 +102,7 @@ public class ElectionSchedulerFactory {
      */
     public Releasable startElectionScheduler(TimeValue gracePeriod, Runnable scheduledRunnable) {
         final ElectionScheduler scheduler = new ElectionScheduler();
-        scheduler.scheduleNextElection(gracePeriod, scheduledRunnable);
+        scheduler.scheduleNextElection(gracePeriod, scheduledRunnable);// 提交线程池
         return scheduler;
     }
 
@@ -137,9 +141,13 @@ public class ElectionSchedulerFactory {
                 return;
             }
 
+            // 第1次就是0，后面+1
             final long thisAttempt = attempt.getAndIncrement();
             // to overflow here would take over a million years of failed election attempts, so we won't worry about that:
+            // 初始就是100ms
             final long maxDelayMillis = Math.min(maxTimeout.millis(), initialTimeout.millis() + thisAttempt * backoffTime.millis());
+
+            // 随机时间但不能超过maxDelayMillis
             final long delayMillis = toPositiveLongAtMost(random.nextLong(), maxDelayMillis) + gracePeriod.millis();
             final Runnable runnable = new AbstractRunnable() {
                 @Override
@@ -154,8 +162,9 @@ public class ElectionSchedulerFactory {
                         logger.debug("{} not starting election", this);
                     } else {
                         logger.debug("{} starting election", this);
+                        // 提交下次延迟执行task
                         scheduleNextElection(duration, scheduledRunnable);
-                        scheduledRunnable.run();
+                        scheduledRunnable.run();// 然后才执行本次任务
                     }
                 }
 
@@ -170,6 +179,7 @@ public class ElectionSchedulerFactory {
             };
 
             logger.debug("scheduling {}", runnable);
+            // 提交线程池
             threadPool.scheduleUnlessShuttingDown(TimeValue.timeValueMillis(delayMillis), Names.GENERIC, runnable);
         }
 

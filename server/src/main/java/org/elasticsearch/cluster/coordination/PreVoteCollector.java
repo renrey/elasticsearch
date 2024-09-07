@@ -58,6 +58,7 @@ public class PreVoteCollector {
         this.electionStrategy = electionStrategy;
         this.nodeHealthService = nodeHealthService;
 
+        // 注册request_pre_vote
         transportService.registerRequestHandler(REQUEST_PRE_VOTE_ACTION_NAME, Names.GENERIC, false, false,
             PreVoteRequest::new,
             (request, channel, task) -> channel.sendResponse(handlePreVoteRequest(request)));
@@ -72,6 +73,7 @@ public class PreVoteCollector {
      */
     public Releasable start(final ClusterState clusterState, final Iterable<DiscoveryNode> broadcastNodes) {
         PreVotingRound preVotingRound = new PreVotingRound(clusterState, state.v2().getCurrentTerm());
+        // 开始
         preVotingRound.start(broadcastNodes);
         return preVotingRound;
     }
@@ -93,12 +95,13 @@ public class PreVoteCollector {
     }
 
     private PreVoteResponse handlePreVoteRequest(final PreVoteRequest request) {
+        // 更新见过最大term -》不是本地选的term
         updateMaxTermSeen.accept(request.getCurrentTerm());
 
         Tuple<DiscoveryNode, PreVoteResponse> state = this.state;
         assert state != null : "received pre-vote request before fully initialised";
 
-        final DiscoveryNode leader = state.v1();
+        final DiscoveryNode leader = state.v1();// leader、follower 当前的leader
         final PreVoteResponse response = state.v2();
 
         final StatusInfo statusInfo = nodeHealthService.getHealth();
@@ -108,6 +111,7 @@ public class PreVoteCollector {
             throw new NodeHealthCheckFailureException(message);
         }
 
+        // 当前节点是Candidate，寻找集群，返回 自己的term
         if (leader == null) {
             return response;
         }
@@ -146,6 +150,7 @@ public class PreVoteCollector {
         void start(final Iterable<DiscoveryNode> broadcastNodes) {
             assert StreamSupport.stream(broadcastNodes.spliterator(), false).noneMatch(Coordinator::isZen1Node) : broadcastNodes;
             logger.debug("{} requesting pre-votes from {}", this, broadcastNodes);
+            // 每个master都发送 request_pre_vote请求
             broadcastNodes.forEach(n -> transportService.sendRequest(n, REQUEST_PRE_VOTE_ACTION_NAME, preVoteRequest,
                 new TransportResponseHandler<PreVoteResponse>() {
                     @Override
@@ -155,6 +160,7 @@ public class PreVoteCollector {
 
                     @Override
                     public void handleResponse(PreVoteResponse response) {
+                        // 处理响应
                         handlePreVoteResponse(response, n);
                     }
 
@@ -181,15 +187,20 @@ public class PreVoteCollector {
                 return;
             }
 
-            updateMaxTermSeen.accept(response.getCurrentTerm());
+            /**
+             * @see Coordinator#updateMaxTermSeen(long)
+             */
+            updateMaxTermSeen.accept(response.getCurrentTerm());// 主要更新本地收到的最大term
 
+            //  对方的版本 比本地新 ，直接跳过 -》选择自己的必须比自己老的？
             if (response.getLastAcceptedTerm() > clusterState.term()
                 || (response.getLastAcceptedTerm() == clusterState.term()
                 && response.getLastAcceptedVersion() > clusterState.getVersionOrMetadataVersion())) {
                 logger.debug("{} ignoring {} from {} as it is fresher", this, response, sender);
                 return;
             }
-
+            // 到这里，代表对方的term、元数据版本最多跟本地的相同
+            // 保存对象
             preVotesReceived.put(sender, response);
 
             // create a fake VoteCollection based on the pre-votes and check if there is an election quorum
@@ -197,10 +208,13 @@ public class PreVoteCollector {
             final DiscoveryNode localNode = clusterState.nodes().getLocalNode();
             final PreVoteResponse localPreVoteResponse = getPreVoteResponse();
 
+            // 基于这些不比本地新的 创建假的 选票集合、
+            // 选择自己的条件
             preVotesReceived.forEach((node, preVoteResponse) -> voteCollection.addJoinVote(
                 new Join(node, localNode, preVoteResponse.getCurrentTerm(),
                 preVoteResponse.getLastAcceptedTerm(), preVoteResponse.getLastAcceptedVersion())));
 
+            // 当前对选自己的选票数量 超过目标一半 -> 选举有意义
             if (electionStrategy.isElectionQuorum(clusterState.nodes().getLocalNode(), localPreVoteResponse.getCurrentTerm(),
                 localPreVoteResponse.getLastAcceptedTerm(), localPreVoteResponse.getLastAcceptedVersion(),
                 clusterState.getLastCommittedConfiguration(), clusterState.getLastAcceptedConfiguration(), voteCollection) == false) {
@@ -213,7 +227,12 @@ public class PreVoteCollector {
                 return;
             }
 
+            // 选自己的超过一半？
+            // 开始选举？
             logger.debug("{} added {} from {}, starting election", this, response, sender);
+            /**
+             * @see Coordinator#startElection()
+             */
             startElection.run();
         }
 

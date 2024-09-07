@@ -87,6 +87,7 @@ public class PublicationTransportHandler {
         this.namedWriteableRegistry = namedWriteableRegistry;
         this.handlePublishRequest = handlePublishRequest;
 
+        // publish_state
         transportService.registerRequestHandler(PUBLISH_STATE_ACTION_NAME, ThreadPool.Names.GENERIC, false, false,
             BytesTransportRequest::new, (request, channel, task) -> channel.sendResponse(handleIncomingPublishRequest(request)));
 
@@ -96,10 +97,12 @@ public class PublicationTransportHandler {
                 channel.sendResponse(TransportResponse.Empty.INSTANCE);
             });
 
+        // commit_state ——》leader发送过来的
         transportService.registerRequestHandler(COMMIT_STATE_ACTION_NAME, ThreadPool.Names.GENERIC, false, false,
             ApplyCommitRequest::new,
             (request, channel, task) -> handleApplyCommit.accept(request, transportCommitCallback(channel)));
 
+        // zen commit
         transportService.registerRequestHandler(PublishClusterStateAction.COMMIT_ACTION_NAME,
             ThreadPool.Names.GENERIC, false, false, PublishClusterStateAction.CommitClusterStateRequest::new,
             (request, channel, task) -> {
@@ -209,6 +212,7 @@ public class PublicationTransportHandler {
     private PublishWithJoinResponse acceptState(ClusterState incomingState) {
         // if the state is coming from the current node, use original request instead (see currentPublishRequestToSelf for explanation)
         if (transportService.getLocalNode().equals(incomingState.nodes().getMasterNode())) {
+            // 处理本地节点的发布请求
             final PublishRequest publishRequest = currentPublishRequestToSelf.get();
             if (publishRequest == null || publishRequest.getAcceptedState().stateUUID().equals(incomingState.stateUUID()) == false) {
                 throw new IllegalStateException("publication to self failed for " + publishRequest);
@@ -216,6 +220,10 @@ public class PublicationTransportHandler {
                 return handlePublishRequest.apply(publishRequest);
             }
         }
+        // 处理请求
+        /**
+         * @see Coordinator#handlePublishRequest(PublishRequest)
+         */
         return handlePublishRequest.apply(new PublishRequest(incomingState));
     }
 
@@ -304,8 +312,10 @@ public class PublicationTransportHandler {
             assert publishRequest.getAcceptedState() == newState : "state got switched on us";
             assert transportService.getThreadPool().getThreadContext().isSystemContext();
             final ActionListener<PublishWithJoinResponse> responseActionListener;
+            // 发送给本地节点
             if (destination.equals(discoveryNodes.getLocalNode())) {
                 // if publishing to self, use original request instead (see currentPublishRequestToSelf for explanation)
+                // 保存到本地 -》用于本地处理publish请求
                 final PublishRequest previousRequest = currentPublishRequestToSelf.getAndSet(publishRequest);
                 // we might override an in-flight publication to self in case where we failed as master and became master again,
                 // and the new publication started before the previous one completed (which fails anyhow because of higher current term)
@@ -313,6 +323,7 @@ public class PublicationTransportHandler {
                 responseActionListener = new ActionListener<PublishWithJoinResponse>() {
                     @Override
                     public void onResponse(PublishWithJoinResponse publishWithJoinResponse) {
+                        // 主要为了清理
                         currentPublishRequestToSelf.compareAndSet(publishRequest, null); // only clean-up our mess
                         listener.onResponse(publishWithJoinResponse);
                     }

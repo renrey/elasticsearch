@@ -101,6 +101,7 @@ public class InboundPipeline implements Releasable {
                 continueHandling = false;
             } else {
                 try {
+                    // 转发请求给handler
                     forwardFragments(channel, fragments);
                 } finally {
                     for (Object fragment : fragments) {
@@ -119,11 +120,13 @@ public class InboundPipeline implements Releasable {
             if (fragment instanceof Header) {
                 assert aggregator.isAggregating() == false;
                 aggregator.headerReceived((Header) fragment);
-            } else if (fragment == InboundDecoder.PING) {
+            } else if (fragment == InboundDecoder.PING) {// ping消息
                 assert aggregator.isAggregating() == false;
+                // 交给messageHandler执行，即转发到handler
                 messageHandler.accept(channel, PING_MESSAGE);
             } else if (fragment == InboundDecoder.END_CONTENT) {
                 assert aggregator.isAggregating();
+                // 执行
                 try (InboundMessage aggregated = aggregator.finishAggregation()) {
                     statsTracker.markMessageReceived();
                     messageHandler.accept(channel, aggregated);

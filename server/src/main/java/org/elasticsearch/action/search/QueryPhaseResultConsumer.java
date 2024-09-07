@@ -79,6 +79,7 @@ public class QueryPhaseResultConsumer extends ArraySearchPhaseResults<SearchPhas
                                     NamedWriteableRegistry namedWriteableRegistry,
                                     int expectedResultSize,
                                     Consumer<Exception> onPartialMergeFailure) {
+        // numShards = expectedResultSize
         super(expectedResultSize);
         this.executor = executor;
         this.circuitBreaker = circuitBreaker;
@@ -110,6 +111,7 @@ public class QueryPhaseResultConsumer extends ArraySearchPhaseResults<SearchPhas
         progressListener.notifyQueryResult(querySearchResult.getShardIndex());
         /**
          * 处理query结果
+         * 就是把result加入到bufferlist
          */
         pendingMerges.consume(querySearchResult, next);
     }
@@ -123,13 +125,13 @@ public class QueryPhaseResultConsumer extends ArraySearchPhaseResults<SearchPhas
         }
 
         // ensure consistent ordering
-        // 先shard排序
+        // buffer 中queryResult先按shard下标排序
         pendingMerges.sortBuffer();
         /**
          * 把buffer中每个result的doc数据合并在一起
          */
-        final TopDocsStats topDocsStats = pendingMerges.consumeTopDocsStats();
-        final List<TopDocs> topDocsList = pendingMerges.consumeTopDocs();
+        final TopDocsStats topDocsStats = pendingMerges.consumeTopDocsStats(); // 聚合所有shard查询结果的统计
+        final List<TopDocs> topDocsList = pendingMerges.consumeTopDocs();// 从每个shard结果拿到匹配文档id、得分
         final List<InternalAggregations> aggsList = pendingMerges.consumeAggs();
         long breakerSize = pendingMerges.circuitBreakerBytes;
         if (hasAggs) {
@@ -357,6 +359,7 @@ public class QueryPhaseResultConsumer extends ArraySearchPhaseResults<SearchPhas
                     buffer.add(result);
                 }
             }
+            // 肯定执行
             if (executeNextImmediately) {
                 next.run();
             }
@@ -471,10 +474,11 @@ public class QueryPhaseResultConsumer extends ArraySearchPhaseResults<SearchPhas
             if (mergeResult != null) {
                 topDocsList.add(mergeResult.reducedTopDocs);
             }
+            // 遍历每个shard的结果
             for (QuerySearchResult result : buffer) {
                 TopDocsAndMaxScore topDocs = result.consumeTopDocs();
                 setShardIndex(topDocs.topDocs, result.getShardIndex());
-                topDocsList.add(topDocs.topDocs);
+                topDocsList.add(topDocs.topDocs);// 就是具体匹配文档结果（id、得分）
             }
             return topDocsList;
         }

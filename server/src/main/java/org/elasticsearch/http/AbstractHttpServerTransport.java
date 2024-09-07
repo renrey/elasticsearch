@@ -15,6 +15,7 @@ import org.apache.logging.log4j.Logger;
 import org.apache.logging.log4j.message.ParameterizedMessage;
 import org.elasticsearch.ExceptionsHelper;
 import org.elasticsearch.action.ActionListener;
+import org.elasticsearch.client.node.NodeClient;
 import org.elasticsearch.common.Strings;
 import org.elasticsearch.common.component.AbstractLifecycleComponent;
 import org.elasticsearch.common.network.CloseableChannel;
@@ -30,7 +31,9 @@ import org.elasticsearch.common.unit.ByteSizeValue;
 import org.elasticsearch.common.util.BigArrays;
 import org.elasticsearch.common.util.concurrent.ThreadContext;
 import org.elasticsearch.common.xcontent.NamedXContentRegistry;
+import org.elasticsearch.rest.BaseRestHandler;
 import org.elasticsearch.rest.RestChannel;
+import org.elasticsearch.rest.RestController;
 import org.elasticsearch.rest.RestRequest;
 import org.elasticsearch.tasks.Task;
 import org.elasticsearch.threadpool.ThreadPool;
@@ -372,9 +375,11 @@ public abstract class AbstractHttpServerTransport extends AbstractLifecycleCompo
      * @param httpChannel that received the http request
      */
     public void incomingRequest(final HttpRequest httpRequest, final HttpChannel httpChannel) {
+        // 记录对方client信息
         updateClientStats(httpRequest, httpChannel);
         final long startTime = threadPool.relativeTimeInMillis();
         try {
+            // 处理
             handleIncomingRequest(httpRequest, httpChannel, httpRequest.getInboundException());
         } finally {
             final long took = threadPool.relativeTimeInMillis() - startTime;
@@ -448,6 +453,13 @@ public abstract class AbstractHttpServerTransport extends AbstractLifecycleCompo
             if (badRequestCause != null) {
                 dispatcher.dispatchBadRequest(channel, threadContext, badRequestCause);
             } else {
+                /**
+                 * 其实就转发给Action模块的RestController，即可开始业务处理
+                 * @see RestController#dispatchRequest(RestRequest, RestChannel, ThreadContext)
+                 *
+                 * 多重后，就是这里
+                 * @see BaseRestHandler#handleRequest(RestRequest, RestChannel, NodeClient)
+                 */
                 dispatcher.dispatchRequest(restRequest, channel, threadContext);
             }
         }
@@ -455,7 +467,9 @@ public abstract class AbstractHttpServerTransport extends AbstractLifecycleCompo
 
     private void handleIncomingRequest(final HttpRequest httpRequest, final HttpChannel httpChannel, final Exception exception) {
         if (exception == null) {
+            // 跨域验证、还有preflight请求
             HttpResponse earlyResponse = corsHandler.handleInbound(httpRequest);
+            // 验证不过，直接发送响应
             if (earlyResponse != null) {
                 httpChannel.sendResponse(earlyResponse, earlyResponseListener(httpRequest, httpChannel));
                 httpRequest.release();
@@ -472,10 +486,13 @@ public abstract class AbstractHttpServerTransport extends AbstractLifecycleCompo
          * or skip decoding the parameters). Once we have a request in hand, we then dispatch the request as a bad request with the
          * underlying exception that caused us to treat the request as bad.
          */
+        // HttpRequest则是粗化的Http格式
+        // RestRequest：代表1个es内部业务属性的http对象，属于比HttpRequest更细的对象
         final RestRequest restRequest;
         {
             RestRequest innerRestRequest;
             try {
+                // 把http请求的内容解析成RestRequest（更具体属性）
                 innerRestRequest = RestRequest.request(xContentRegistry, httpRequest, httpChannel);
             } catch (final RestRequest.ContentTypeHeaderException e) {
                 badRequestCause = ExceptionsHelper.useOrSuppress(badRequestCause, e);
@@ -486,7 +503,7 @@ public abstract class AbstractHttpServerTransport extends AbstractLifecycleCompo
             }
             restRequest = innerRestRequest;
         }
-
+        // trace级别打印使用
         final HttpTracer trace = tracer.maybeTraceRequest(restRequest, exception);
 
         /*
@@ -495,6 +512,7 @@ public abstract class AbstractHttpServerTransport extends AbstractLifecycleCompo
          * IllegalArgumentException from the channel constructor and then attempt to create a new channel that bypasses parsing of these
          * parameter values.
          */
+        // 负责把业务响应RestResponse对象（入参，带具体业务属性，属于是把通用业务属性格式化个http内容），调用粗粒度的Http api发送响应
         final RestChannel channel;
         {
             RestChannel innerChannel;
@@ -513,6 +531,7 @@ public abstract class AbstractHttpServerTransport extends AbstractLifecycleCompo
             channel = innerChannel;
         }
 
+        // 转发请求
         dispatchRequest(restRequest, channel, badRequestCause);
     }
 

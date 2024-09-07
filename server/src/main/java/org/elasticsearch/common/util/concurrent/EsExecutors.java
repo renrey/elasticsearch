@@ -94,7 +94,9 @@ public class EsExecutors {
 
     public static EsThreadPoolExecutor newScaling(String name, int min, int max, long keepAliveTime, TimeUnit unit,
                                                   ThreadFactory threadFactory, ThreadContext contextHolder) {
+        // 队列
         ExecutorScalingQueue<Runnable> queue = new ExecutorScalingQueue<>();
+        // 执行器-》封装钩子listener
         EsThreadPoolExecutor executor =
             new EsThreadPoolExecutor(name, min, max, keepAliveTime, unit, queue, threadFactory, new ForceQueuePolicy(), contextHolder);
         queue.executor = executor;
@@ -294,11 +296,13 @@ public class EsExecutors {
         }
 
         @Override
-        public boolean offer(E e) {
+        public boolean offer(E e) {// 写入
             // first try to transfer to a waiting worker thread
+            // 1. 尝试提交给1个空闲worker
             if (tryTransfer(e) == false) {
                 // check if there might be spare capacity in the thread
                 // pool executor
+                // 2. 判断如果线程没超过最大，直接新增worker -》改造点：原生是（core数达标）队列满了才加到线程，es优先把线程加满
                 int left = executor.getMaximumPoolSize() - executor.getCorePoolSize();
                 if (left > 0) {
                     // reject queuing the task to force the thread pool
@@ -308,6 +312,7 @@ public class EsExecutors {
                     // only queue when there is no spare capacity
                     return false;
                 } else {
+                    // 超过才加队列
                     return super.offer(e);
                 }
             } else {

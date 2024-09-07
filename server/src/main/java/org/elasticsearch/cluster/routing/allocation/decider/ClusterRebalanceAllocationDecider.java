@@ -145,7 +145,7 @@ public class ClusterRebalanceAllocationDecider extends AllocationDecider {
                     return NO_INACTIVE_SHARDS;
                 }
                 // fall-through
-            default:
+            default:// 默认使用这个
                 // all shards active from above or type == Type.ALWAYS
                 return YES_ALL_SHARDS_ACTIVE;
         }

@@ -509,6 +509,8 @@ public class ActionModule extends AbstractModule {
         ActionRegistry actions = new ActionRegistry();
         /**
          * 给不同的actiontype，注册 TransportAction
+         * 就是集群内部通信action注册具体执行的TransportAction（会发起请求）
+         * 这些属于具体action逻辑执行！！！
          */
 
         actions.register(MainAction.INSTANCE, TransportMainAction.class);
@@ -601,6 +603,7 @@ public class ActionModule extends AbstractModule {
                 TransportShardMultiGetAction.class);
         actions.register(BulkAction.INSTANCE, TransportBulkAction.class,
                 TransportShardBulkAction.class);
+        //
         actions.register(SearchAction.INSTANCE, TransportSearchAction.class);
         actions.register(SearchScrollAction.INSTANCE, TransportSearchScrollAction.class);
         actions.register(OpenPointInTimeAction.INSTANCE, TransportOpenPointInTimeAction.class);
@@ -668,6 +671,7 @@ public class ActionModule extends AbstractModule {
         };
         /**
          * 把各种action注册到restController（用registerHandler的逻辑）
+         * http对外的action都在这
          */
         registerHandler.accept(new RestAddVotingConfigExclusionAction());
         registerHandler.accept(new RestClearVotingConfigExclusionsAction());
@@ -759,6 +763,7 @@ public class ActionModule extends AbstractModule {
         registerHandler.accept(new RestBulkAction(settings));
         registerHandler.accept(new RestUpdateAction());
 
+        // 搜索
         registerHandler.accept(new RestSearchAction());
         registerHandler.accept(new RestSearchScrollAction());
         registerHandler.accept(new RestClearScrollAction());

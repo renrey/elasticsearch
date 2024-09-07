@@ -58,7 +58,14 @@ public class AllocationDeciders extends AllocationDecider {
             return Decision.NO;
         }
         Decision.Multi ret = new Decision.Multi();
+        // 就是多个AllocationDecider，判断当前shard是否可被分配到一个node上
         for (AllocationDecider allocationDecider : allocations) {
+            /**
+             * 分配感知
+             * @see AwarenessAllocationDecider#canAllocate(ShardRouting, RoutingNode, RoutingAllocation)
+             * 同一shard（同一个node只有1个shard组下一个shard实例）
+             * @see org.elasticsearch.cluster.routing.allocation.decider.SameShardAllocationDecider#canAllocate(org.elasticsearch.cluster.routing.ShardRouting, org.elasticsearch.cluster.routing.RoutingNode, org.elasticsearch.cluster.routing.allocation.RoutingAllocation)
+             */
             Decision decision = allocationDecider.canAllocate(shardRouting, node, allocation);
             // short track if a NO is returned.
             if (decision.type() == Decision.Type.NO) {

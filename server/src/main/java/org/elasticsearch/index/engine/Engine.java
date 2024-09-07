@@ -623,12 +623,30 @@ public abstract class Engine implements Closeable {
         }
         Releasable releasable = store::decRef;
         try {
+            /**
+             * 1. 获取当前engine 基于lucene-FilterDirectoryReader重写的IndexReader
+             *
+             *  ReferenceManager是一种工具类，包装在定时refresh进行时，多线程使用同一对象线程安全
+             *
+             *  referenceManager主要作用：保证refresh（新打开对象）时，不影响我们正常功能使用
+             *  其实就是分开2个对象
+             *
+             *  外部请求使用
+             * @see InternalEngine.ExternalReaderManager
+             */
             ReferenceManager<ElasticsearchDirectoryReader> referenceManager = getReferenceManager(scope);
+            // 其实就是引用+1，然后返回当前使用的多线程 ElasticsearchDirectoryReader
             ElasticsearchDirectoryReader acquire = referenceManager.acquire();
             SearcherSupplier reader = new SearcherSupplier(wrapper) {
                 @Override
                 public Searcher acquireSearcherInternal(String source) {
                     assert assertSearcherIsWarmedUp(source, scope);
+                    /**
+                     * 2. 创建engine封装的searcher，直接套当前engine的配置
+                     * 封装了上面的IndexReader
+                     *
+                     * ElasticsearchDirectoryReader-> FilterDirectoryReader->
+                     */
                     return new Searcher(source, acquire, engineConfig.getSimilarity(), engineConfig.getQueryCache(),
                         engineConfig.getQueryCachingPolicy(), () -> {});
                 }
@@ -865,7 +883,9 @@ public abstract class Engine implements Closeable {
         ensureOpen();
         Map<String, Segment> segments = new HashMap<>();
         // first, go over and compute the search ones...
+        // 1. 打开searcher，获取每个leave
         try (Searcher searcher = acquireSearcher("segments", SearcherScope.EXTERNAL)){
+            // 每个leaf是1个segment
             for (LeafReaderContext ctx : searcher.getIndexReader().getContext().leaves()) {
                 fillSegmentInfo(Lucene.segmentReader(ctx.reader()), verbose, true, segments);
             }
@@ -932,6 +952,7 @@ public abstract class Engine implements Closeable {
         }
         segment.attributes = info.info.getAttributes();
         // TODO: add more fine grained mem stats values to per segment info here
+        // 名字 -》当前segment
         segments.put(info.info.name, segment);
     }
 
@@ -1208,9 +1229,9 @@ public abstract class Engine implements Closeable {
                         Similarity similarity, QueryCache queryCache, QueryCachingPolicy queryCachingPolicy,
                         Closeable onClose) {
             super(reader);
-            setSimilarity(similarity);
-            setQueryCache(queryCache);
-            setQueryCachingPolicy(queryCachingPolicy);
+            setSimilarity(similarity);// 要求创建时创建相关度策略
+            setQueryCache(queryCache);// 查询缓存对象
+            setQueryCachingPolicy(queryCachingPolicy);// 缓存策略
             this.source = source;
             this.onClose = onClose;
         }
@@ -1278,7 +1299,7 @@ public abstract class Engine implements Closeable {
         }
 
         public enum Origin {
-            PRIMARY,
+            PRIMARY,// 应该p shard执行
             REPLICA,
             PEER_RECOVERY,
             LOCAL_TRANSLOG_RECOVERY,
@@ -1289,6 +1310,9 @@ public abstract class Engine implements Closeable {
             }
 
             boolean isFromTranslog() {
+                // 这个操作触发是否 translog相关
+                // 1. 本地恢复
+                // 2.
                 return this == LOCAL_TRANSLOG_RECOVERY || this == LOCAL_RESET;
             }
         }

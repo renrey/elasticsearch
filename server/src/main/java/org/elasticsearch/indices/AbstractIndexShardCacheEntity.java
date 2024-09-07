@@ -30,6 +30,7 @@ abstract class AbstractIndexShardCacheEntity implements IndicesRequestCache.Cach
 
     @Override
     public final void onHit() {
+        // 统计记录
         stats().onHit();
     }
 

@@ -110,6 +110,7 @@ public class TransportResyncReplicationAction extends TransportWriteAction<Resyn
     protected void dispatchedShardOperationOnReplica(ResyncReplicationRequest request, IndexShard replica,
             ActionListener<ReplicaResult> listener) {
         ActionListener.completeWith(listener, () -> {
+            //
             Translog.Location location = performOnReplica(request, replica);
             return new WriteReplicaResult<>(request, location, null, replica, logger);
         });

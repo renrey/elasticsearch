@@ -159,7 +159,7 @@ public final class QuerySearchResult extends SearchPhaseResult {
     }
 
     public void topDocs(TopDocsAndMaxScore topDocs, DocValueFormat[] sortValueFormats) {
-        setTopDocs(topDocs);
+        setTopDocs(topDocs);// 获取lucene结果
         if (topDocs.topDocs.scoreDocs.length > 0 && topDocs.topDocs.scoreDocs[0] instanceof FieldDoc) {
             int numFields = ((FieldDoc) topDocs.topDocs.scoreDocs[0]).fields.length;
             if (numFields != sortValueFormats.length) {
@@ -171,9 +171,9 @@ public final class QuerySearchResult extends SearchPhaseResult {
     }
 
     private void setTopDocs(TopDocsAndMaxScore topDocsAndMaxScore) {
-        this.topDocsAndMaxScore = topDocsAndMaxScore;
-        this.totalHits = topDocsAndMaxScore.topDocs.totalHits;
-        this.maxScore = topDocsAndMaxScore.maxScore;
+        this.topDocsAndMaxScore = topDocsAndMaxScore;// 最高分数、docId集合
+        this.totalHits = topDocsAndMaxScore.topDocs.totalHits;// 符合数量
+        this.maxScore = topDocsAndMaxScore.maxScore;// 最高分数
         this.hasScoreDocs = topDocsAndMaxScore.topDocs.scoreDocs.length > 0;
     }
 
@@ -361,8 +361,10 @@ public final class QuerySearchResult extends SearchPhaseResult {
     }
 
     public void writeToNoId(StreamOutput out) throws IOException {
+        // from size
         out.writeVInt(from);
         out.writeVInt(size);
+        // doc结果
         if (sortValueFormats == null) {
             out.writeVInt(0);
         } else {
@@ -387,6 +389,8 @@ public final class QuerySearchResult extends SearchPhaseResult {
                 out.writeNamedWriteableList(emptyList());
             }
         } else {
+            // 聚合
+
             out.writeBoolean(true);
             if (out.getVersion().before(Version.V_7_7_0)) {
                 InternalAggregations aggs = aggregations.expand();

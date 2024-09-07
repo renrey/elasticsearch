@@ -88,11 +88,15 @@ public class ShardsLimitAllocationDecider extends AllocationDecider {
     private Decision doDecide(ShardRouting shardRouting, RoutingNode node, RoutingAllocation allocation,
                               BiPredicate<Integer, Integer> decider) {
         IndexMetadata indexMd = allocation.metadata().getIndexSafe(shardRouting.index());
+        // index.routing.allocation.total_shards_per_node 的配置，默认-1，除非手动配置，作用就是每个node可分配shard数
         final int indexShardLimit = INDEX_TOTAL_SHARDS_PER_NODE_SETTING.get(indexMd.getSettings(), settings);
         // Capture the limit here in case it changes during this method's
         // execution
+
+        // cluster.routing.allocation.total_shards_per_node
         final int clusterShardLimit = this.clusterShardLimit;
 
+        // 可知这2个配置作用就是现在shard数量上限，默认不使用
         if (indexShardLimit <= 0 && clusterShardLimit <= 0) {
             return allocation.decision(Decision.YES, NAME, "total shard limits are disabled: [index: %d, cluster: %d] <= 0",
                     indexShardLimit, clusterShardLimit);
@@ -100,11 +104,13 @@ public class ShardsLimitAllocationDecider extends AllocationDecider {
 
         final int nodeShardCount = node.numberOfOwningShards();
 
+        // 开启集群下node的shard限制，比的当前node下shard数量
         if (clusterShardLimit > 0 && decider.test(nodeShardCount, clusterShardLimit)) {
             return allocation.decision(Decision.NO, NAME,
                 "too many shards [%d] allocated to this node, cluster setting [%s=%d]",
                 nodeShardCount, CLUSTER_TOTAL_SHARDS_PER_NODE_SETTING.getKey(), clusterShardLimit);
         }
+        // 开启了当前index下shard限制，比的是当前index的shard数
         if (indexShardLimit > 0) {
             final int indexShardCount = node.numberOfOwningShardsForIndex(shardRouting.index());
             if (decider.test(indexShardCount, indexShardLimit)) {

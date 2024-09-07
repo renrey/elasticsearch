@@ -21,6 +21,7 @@ import org.elasticsearch.transport.TransportException;
 
 import java.net.InetSocketAddress;
 
+// es channel
 public class Netty4TcpChannel implements TcpChannel {
 
     private final Channel channel;
@@ -31,11 +32,13 @@ public class Netty4TcpChannel implements TcpChannel {
     private final ChannelStats stats = new ChannelStats();
 
     Netty4TcpChannel(Channel channel, boolean isServer, String profile, @Nullable ChannelFuture connectFuture) {
-        this.channel = channel;
+        this.channel = channel;// netty channel
         this.isServer = isServer;
         this.profile = profile;
         this.connectContext = new CompletableContext<>();
+        // 往netty channel加入关闭函数 ：调用绑定closeContext下的listener
         addListener(this.channel.closeFuture(), closeContext);
+        // 连接完成后回调：调用connectContext
         addListener(connectFuture, connectContext);
     }
 
@@ -100,6 +103,7 @@ public class Netty4TcpChannel implements TcpChannel {
         return profile;
     }
 
+    // 连接时处理函数
     @Override
     public void addCloseListener(ActionListener<Void> listener) {
         closeContext.addListener(ActionListener.toBiConsumer(listener));

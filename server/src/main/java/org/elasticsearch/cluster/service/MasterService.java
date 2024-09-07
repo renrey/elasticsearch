@@ -138,6 +138,7 @@ public class MasterService extends AbstractLifecycleComponent {
         protected void run(Object batchingKey, List<? extends BatchedTask> tasks, String tasksSummary) {
             ClusterStateTaskExecutor<Object> taskExecutor = (ClusterStateTaskExecutor<Object>) batchingKey;
             List<UpdateTask> updateTasks = (List<UpdateTask>) tasks;
+            // 1批任务包装1个TaskInputs
             runTasks(new TaskInputs(taskExecutor, updateTasks, tasksSummary));
         }
 
@@ -221,7 +222,7 @@ public class MasterService extends AbstractLifecycleComponent {
         // 集群state没发生变化
         if (taskOutputs.clusterStateUnchanged()) {
             final long notificationStartTime = threadPool.relativeTimeInMillis();
-            taskOutputs.notifySuccessfulTasksOnUnchangedClusterState(); // 直接通知成功（如选举返回响应）
+            taskOutputs.notifySuccessfulTasksOnUnchangedClusterState(); // 直接通知成功（如返回join响应）
             final TimeValue executionTime = getTimeSince(notificationStartTime);
             logExecutionTime(executionTime, "notify listeners on unchanged cluster state", summary);
         } else {
@@ -249,7 +250,7 @@ public class MasterService extends AbstractLifecycleComponent {
                 /**
                  * 2。发布新的ClusterState！！！
                  */
-                publish(clusterChangedEvent, taskOutputs, publicationStartTime);
+                 publish(clusterChangedEvent, taskOutputs, publicationStartTime);
             } catch (Exception e) {
                 handleException(summary, publicationStartTime, newClusterState, e);
             }
@@ -268,7 +269,7 @@ public class MasterService extends AbstractLifecycleComponent {
             }
         };
         /**
-         * 发布执行
+         * 发布新的状态
          * @see org.elasticsearch.discovery.zen.ZenDiscovery#publish(org.elasticsearch.cluster.ClusterChangedEvent, org.elasticsearch.action.ActionListener, org.elasticsearch.cluster.coordination.ClusterStatePublisher.AckListener)
          * @see Coordinator#publish(org.elasticsearch.cluster.ClusterChangedEvent, org.elasticsearch.action.ActionListener, org.elasticsearch.cluster.coordination.ClusterStatePublisher.AckListener)
          */
@@ -282,6 +283,7 @@ public class MasterService extends AbstractLifecycleComponent {
              */
             onPublicationSuccess(clusterChangedEvent, taskOutputs);
         } catch (Exception e) {
+            // 发布失败也返回
             onPublicationFailed(clusterChangedEvent, taskOutputs, startTimeMillis, e);
         }
     }
@@ -439,6 +441,8 @@ public class MasterService extends AbstractLifecycleComponent {
         }
 
         Discovery.AckListener createAckListener(ThreadPool threadPool, ClusterState newClusterState) {
+            // 执行参数里Listeners集合 -》就是需要成功task本身定义AckedClusterStateTaskListener的 Listener(onAllNodesAcked、onAckTimeout)
+            // 实际就是每个task的AckCountDownListener -> 判断ack时间 调用task.listener的 onAllNodesAcked、onAckTimeout
             return new DelegatingAckListener(nonFailedTasks.stream()
                 .filter(task -> task.listener instanceof AckedClusterStateTaskListener)
                 .map(task -> new AckCountDownListener((AckedClusterStateTaskListener) task.listener, newClusterState.version(),
@@ -711,6 +715,8 @@ public class MasterService extends AbstractLifecycleComponent {
     private ClusterTasksResult<Object> executeTasks(TaskInputs taskInputs, ClusterState previousClusterState) {
         ClusterTasksResult<Object> clusterTasksResult;
         try {
+            // 获取任务里的执行对象
+            // JoinTaskExecutor.Task
             List<Object> inputs = taskInputs.updateTasks.stream().map(tUpdateTask -> tUpdateTask.task).collect(Collectors.toList());
             /**
              * 处理这批任务
@@ -754,6 +760,7 @@ public class MasterService extends AbstractLifecycleComponent {
 
     private List<Batcher.UpdateTask> getNonFailedTasks(TaskInputs taskInputs,
                                                       ClusterTasksResult<Object> clusterTasksResult) {
+        // 获取成功的task
         return taskInputs.updateTasks.stream().filter(updateTask -> {
             assert clusterTasksResult.executionResults.containsKey(updateTask.task) : "missing " + updateTask;
             final ClusterStateTaskExecutor.TaskResult taskResult =
@@ -809,6 +816,7 @@ public class MasterService extends AbstractLifecycleComponent {
         try (ThreadContext.StoredContext ignore = threadContext.stashContext()) {
             threadContext.markAsSystemContext();
 
+            // 生成UpdateTask的任务-> 实际就是告诉执行JoinTaskExecutor.Task（但里面就是操作的名字），listener只是执行完成的回调
             List<Batcher.UpdateTask> safeTasks = tasks.entrySet().stream()
                 .map(e -> taskBatcher.new UpdateTask(config.priority(), source, e.getKey(), safe(e.getValue(), supplier), executor))
                 .collect(Collectors.toList());

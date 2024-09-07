@@ -85,6 +85,7 @@ public final class ScalingExecutorBuilder extends ExecutorBuilder<ScalingExecuto
         int max = settings.max;
         final ThreadPool.Info info = new ThreadPool.Info(name(), ThreadPool.ThreadPoolType.SCALING, core, max, keepAlive, null);
         final ThreadFactory threadFactory = EsExecutors.daemonThreadFactory(EsExecutors.threadName(settings.nodeName, name()));
+        // 都基于java原生ExecutorService封装，加入了一些钩子扩展点
         final ExecutorService executor =
             EsExecutors.newScaling(
                     settings.nodeName + "/" + name(),

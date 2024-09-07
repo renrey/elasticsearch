@@ -359,8 +359,10 @@ public abstract class MetadataStateFormat<T> {
             return files;
         }
 
+        // 找回代表代的文件： state-代.st
         final String fileName = getStateFileName(generation);
         for (Path dataLocation : locations) {
+            // 具体文件路径：/_state/state-代.st
             final Path stateFilePath = dataLocation.resolve(STATE_DIR_NAME).resolve(fileName);
             if (Files.exists(stateFilePath)) {
                 logger.trace("found state file: {}", stateFilePath);
@@ -385,11 +387,13 @@ public abstract class MetadataStateFormat<T> {
      * @return the state of asked generation or <code>null</code> if no state was found.
      */
     public T loadGeneration(Logger logger, NamedXContentRegistry namedXContentRegistry, long generation, Path... dataLocations) {
+        // 获取state文件具体路径
         List<Path> stateFiles = findStateFilesByGeneration(generation, dataLocations);
 
         final List<Throwable> exceptions = new ArrayList<>();
         for (Path stateFile : stateFiles) {
             try {
+                // 加载state文件
                 T state = read(namedXContentRegistry, stateFile);
                 logger.trace("generation id [{}] read from [{}]", generation, stateFile.getFileName());
                 return state;
@@ -418,7 +422,9 @@ public abstract class MetadataStateFormat<T> {
      */
     public Tuple<T, Long> loadLatestStateWithGeneration(Logger logger, NamedXContentRegistry namedXContentRegistry, Path... dataLocations)
             throws IOException {
+        // 通过在lucene目录 （/_state/state-代.st）下通过前缀找代，如 shard就是state-前缀
         long generation = findMaxGenerationId(prefix, dataLocations);
+        // 读取文件
         T state = loadGeneration(logger, namedXContentRegistry, generation, dataLocations);
 
         if (generation > -1 && state == null) {

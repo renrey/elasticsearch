@@ -44,6 +44,11 @@ public abstract class BaseGatewayShardAllocator {
      */
     public void allocateUnassigned(ShardRouting shardRouting, RoutingAllocation allocation,
                                    ExistingShardsAllocator.UnassignedAllocationHandler unassignedAllocationHandler) {
+        // 就是这里做未分配shard的 分配node选择
+        /**
+         * @see PrimaryShardAllocator#makeAllocationDecision(ShardRouting, RoutingAllocation, Logger)
+         * @see ReplicaShardAllocator#makeAllocationDecision(ShardRouting, RoutingAllocation, Logger)
+         */
         final AllocateUnassignedDecision allocateUnassignedDecision = makeAllocationDecision(shardRouting, allocation, logger);
 
         if (allocateUnassignedDecision.isDecisionTaken() == false) {
@@ -51,8 +56,10 @@ public abstract class BaseGatewayShardAllocator {
             return;
         }
 
+        // YES 就是最终分配目标
         if (allocateUnassignedDecision.getAllocationDecision() == AllocationDecision.YES) {
-            unassignedAllocationHandler.initialize(allocateUnassignedDecision.getTargetNode().getId(),
+            // 大概就是往RoutingNodes 中加入当前shard的initialize状态操作
+            unassignedAllocationHandler.initialize(allocateUnassignedDecision.getTargetNode().getId(),// getTargetNode就分配node
                 allocateUnassignedDecision.getAllocationId(),
                 getExpectedShardSize(shardRouting, allocation),
                 allocation.changes());

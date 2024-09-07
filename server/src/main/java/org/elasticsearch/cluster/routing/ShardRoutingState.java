@@ -16,19 +16,23 @@ package org.elasticsearch.cluster.routing;
 public enum ShardRoutingState {
     /**
      * The shard is not assigned to any node.
+     * 未分配到任意节点
      */
     UNASSIGNED((byte) 1),
     /**
      * The shard is initializing (probably recovering from either a peer shard
      * or gateway).
+     * 正在初始化
      */
     INITIALIZING((byte) 2),
     /**
      * The shard is started.
+     * 已完成启动
      */
     STARTED((byte) 3),
     /**
      * The shard is in the process being relocated.
+     * 正在重分配
      */
     RELOCATING((byte) 4);
 

@@ -22,6 +22,7 @@ import org.elasticsearch.action.OriginalIndices;
 import org.elasticsearch.action.search.SearchRequest;
 import org.elasticsearch.action.search.SearchShardTask;
 import org.elasticsearch.action.search.SearchType;
+import org.elasticsearch.action.support.ChannelActionListener;
 import org.elasticsearch.action.support.TransportActions;
 import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.cluster.routing.ShardRouting;
@@ -115,6 +116,7 @@ import org.elasticsearch.tasks.TaskCancelledException;
 import org.elasticsearch.threadpool.Scheduler.Cancellable;
 import org.elasticsearch.threadpool.ThreadPool;
 import org.elasticsearch.threadpool.ThreadPool.Names;
+import org.elasticsearch.transport.TransportChannel;
 import org.elasticsearch.transport.TransportRequest;
 
 import java.io.IOException;
@@ -134,6 +136,7 @@ import static org.elasticsearch.common.unit.TimeValue.timeValueHours;
 import static org.elasticsearch.common.unit.TimeValue.timeValueMillis;
 import static org.elasticsearch.common.unit.TimeValue.timeValueMinutes;
 
+// 这个是搜索操作的封装类，提供给上层使用
 public class SearchService extends AbstractLifecycleComponent implements IndexEventListener {
     private static final Logger logger = LogManager.getLogger(SearchService.class);
 
@@ -210,6 +213,10 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
 
     private final AtomicLong idGenerator = new AtomicLong();
 
+    /**
+     * 代表当前已有的reader（在查询的）
+     * query阶段会生成id、readerContext
+     */
     private final ConcurrentMapLong<ReaderContext> activeReaders = ConcurrentCollections.newConcurrentMapLongWithAggressiveConcurrency();
 
     private final MultiBucketConsumerService multiBucketConsumerService;
@@ -320,11 +327,13 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
     }
 
     protected void putReaderContext(ReaderContext context) {
+        // 放入当前context，应该也是用于统计使用
         final ReaderContext previous = activeReaders.put(context.id().getId(), context);
         assert previous == null;
         // ensure that if we race against afterIndexRemoved, we remove the context from the active list.
         // this is important to ensure store can be cleaned up, in particular if the search is a scroll with a long timeout.
         final Index index = context.indexShard().shardId().getIndex();
+        // double check
         if (indicesService.hasIndex(index) == false) {
             removeReaderContext(context.id().getId());
             throw new IndexNotFoundException(index);
@@ -379,14 +388,22 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
     private void loadOrExecuteQueryPhase(final ShardSearchRequest request, final SearchContext context) throws Exception {
         final boolean canCache = indicesService.canCache(request, context);
         context.getSearchExecutionContext().freezeContext();
+        // 缓存--> 只能是queryThenFetch
         if (canCache) {
+            // 其实就执行query缓存docid
             indicesService.loadIntoContext(request, context, queryPhase);
         } else {
+            // 查询入口
             queryPhase.execute(context);
         }
     }
 
+    // 处理query阶段的shard请求
     public void executeQueryPhase(ShardSearchRequest request, SearchShardTask task, ActionListener<SearchPhaseResult> listener) {
+        /**
+         * listener是ChannelActionListener，负责调用channel发送响应
+         * @see ChannelActionListener#ChannelActionListener(TransportChannel, String, TransportRequest)
+         */
         assert request.canReturnNullResponseIfMatchNoDocs() == false || request.numberOfShards() > 1
             : "empty responses require more than one shard";
         final IndexShard shard = getShard(request);
@@ -408,6 +425,10 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
                 }
             }
             // fork the execution in the search thread pool
+            /**
+             * 异步提交到线程池执行：一般是search线程池
+             * getExecutor 选择使用线程池-- 系统index：system-READ, 普通：search 配置了限流：SEARCH_THROTTLED
+             */
             runAsync(getExecutor(shard), () -> executeQueryPhase(orig, task), l);
         }));
     }
@@ -431,18 +452,28 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
     }
 
     private SearchPhaseResult executeQueryPhase(ShardSearchRequest request, SearchShardTask task) throws Exception {
+        /**
+         * 1. 创建需要的参数对象！！！里面会拿到对应的lucene的searcher
+         */
         final ReaderContext readerContext = createOrGetReaderContext(request);
         try (Releasable ignored = readerContext.markAsUsed(getKeepAlive(request));
+               // 创建到SearchContext中
                 SearchContext context = createContext(readerContext, request, task, true)) {
             final long afterQueryTime;
+            /**
+             * 2. 查询操作执行！！！
+             */
             try (SearchOperationListenerExecutor executor = new SearchOperationListenerExecutor(context)) {
+                // 执行query查询 -》可能缓存
                 loadOrExecuteQueryPhase(request, context);
                 if (context.queryResult().hasSearchContext() == false && readerContext.singleSession()) {
                     freeReaderContext(readerContext.id());
                 }
                 afterQueryTime = executor.success();
             }
+
             if (request.numberOfShards() == 1) {
+                // 优化点：只有1个shard，直接执行对它fetch
                 return executeFetchPhase(readerContext, context, afterQueryTime);
             } else {
                 // Pass the rescoreDocIds to the queryResult to send them the coordinating node and receive them back in the fetch phase.
@@ -450,6 +481,7 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
                 final RescoreDocIds rescoreDocIds = context.rescoreDocIds();
                 context.queryResult().setRescoreDocIds(rescoreDocIds);
                 readerContext.setRescoreDocIds(rescoreDocIds);
+                // 返回结果
                 return context.queryResult();
             }
         } catch (Exception e) {
@@ -473,6 +505,7 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
             }
             executor.success();
         }
+        // 返回结果
         return new QueryFetchSearchResult(context.queryResult(), context.fetchResult());
     }
 
@@ -539,9 +572,9 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
     private Executor getExecutor(IndexShard indexShard) {
         assert indexShard != null;
         final String executorName;
-        if (indexShard.isSystem()) {
+        if (indexShard.isSystem()) {// 系统索引
             executorName = Names.SYSTEM_READ;
-        } else if (indexShard.indexSettings().isSearchThrottled()) {
+        } else if (indexShard.indexSettings().isSearchThrottled()) {// index设置了限流，则是SEARCH_THROTTLED
             executorName = Names.SEARCH_THROTTLED;
         } else {
             executorName = Names.SEARCH;
@@ -569,6 +602,7 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
                 processScroll(request, readerContext, searchContext);
                 queryPhase.execute(searchContext);
                 final long afterQueryTime = executor.success();
+                // 执行fetch
                 QueryFetchSearchResult fetchSearchResult = executeFetchPhase(readerContext, searchContext, afterQueryTime);
                 return new ScrollQueryFetchSearchResult(fetchSearchResult, searchContext.shardTarget());
             } catch (Exception e) {
@@ -581,9 +615,11 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
     }
 
     public void executeFetchPhase(ShardFetchRequest request, SearchShardTask task, ActionListener<FetchSearchResult> listener) {
+        // 就是找query阶段在当前node创建ReaderContext -》所以需要还是这个节点上执行
         final ReaderContext readerContext = findReaderContext(request.contextId(), request);
         final ShardSearchRequest shardSearchRequest = readerContext.getShardSearchRequest(request.getShardSearchRequest());
         final Releasable markAsUsed = readerContext.markAsUsed(getKeepAlive(shardSearchRequest));
+        // 还是search线程池
         runAsync(getExecutor(readerContext.indexShard()), () -> {
             try (SearchContext searchContext = createContext(readerContext, shardSearchRequest, task, false)) {
                 if (request.lastEmittedDoc() != null) {
@@ -591,15 +627,18 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
                 }
                 searchContext.assignRescoreDocIds(readerContext.getRescoreDocIds(request.getRescoreDocIds()));
                 searchContext.searcher().setAggregatedDfs(readerContext.getAggregatedDfs(request.getAggregatedDfs()));
+                // 放入docId
                 searchContext.docIdsToLoad(request.docIds(), request.docIdsSize());
                 try (SearchOperationListenerExecutor executor =
                          new SearchOperationListenerExecutor(searchContext, true, System.nanoTime())) {
+                    // 执行fetch
                     fetchPhase.execute(searchContext);
                     if (readerContext.singleSession()) {
                         freeReaderContext(request.contextId());
                     }
                     executor.success();
                 }
+                // 返回结果
                 return searchContext.fetchResult();
             } catch (Exception e) {
                 assert TransportActions.isShardNotAvailableException(e) == false : new AssertionError(e);
@@ -634,6 +673,7 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
         return reader;
     }
 
+    // 就是创建本次检索需要用到的对象参数
     final ReaderContext createOrGetReaderContext(ShardSearchRequest request) {
         if (request.readerId() != null) {
             assert request.scroll() == null : "scroll can't be used with pit";
@@ -654,10 +694,17 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
                 return createAndPutReaderContext(request, indexService, shard, searcherSupplier, defaultKeepAlive);
             }
         } else {
+            // 获取需要保留的时间，就是scorll类的
             final long keepAliveInMillis = getKeepAlive(request);
+            // 获取目前shard-Index的IndexService
             final IndexService indexService = indicesService.indexServiceSafe(request.shardId().getIndex());
+            // 再通过IndexService拿到代表当前的shard实例
             final IndexShard shard = indexService.getShard(request.shardId().id());
+
+            // 这个函数作用是获取shard的lucene-Searcher
             final Engine.SearcherSupplier searcherSupplier = shard.acquireSearcherSupplier();
+
+            // 也是核心方法l
             return createAndPutReaderContext(request, indexService, shard, searcherSupplier, keepAliveInMillis);
         }
     }
@@ -667,6 +714,7 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
         ReaderContext readerContext = null;
         Releasable decreaseScrollContexts = null;
         try {
+            // scroll请求处理
             if (request.scroll() != null) {
                 decreaseScrollContexts = openScrollContexts::decrementAndGet;
                 if (openScrollContexts.incrementAndGet() > maxOpenScrollContext) {
@@ -676,6 +724,8 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
                             + MAX_OPEN_SCROLL_CONTEXT.getKey() + "] setting.");
                 }
             }
+
+            // id即session唯一
             final ShardSearchContextId id = new ShardSearchContextId(sessionId, idGenerator.incrementAndGet());
             // Previously, the search states are stored in ReaderContext on data nodes. Since 7.10, they are now
             // sent to the coordinating node in QuerySearchResult and the coordinating node then sends them back
@@ -700,15 +750,17 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
                     decreaseScrollContexts = null;
                 }
             } else {
+                // 用到的对象都封装到一个readerContext
                 readerContext = new ReaderContext(id, indexService, shard, reader, keepAliveInMillis, true);
             }
             reader = null;
             final ReaderContext finalReaderContext = readerContext;
             final SearchOperationListener searchOperationListener = shard.getSearchOperationListener();
-            searchOperationListener.onNewReaderContext(finalReaderContext);
+            searchOperationListener.onNewReaderContext(finalReaderContext);// 这个好像是个计数的，计数+1
             if (finalReaderContext.scrollContext() != null) {
                 searchOperationListener.onNewScrollContext(finalReaderContext);
             }
+            // 添加一个完成关闭的回调：把刚刚上面计数释放掉
             readerContext.addOnClose(() -> {
                 try {
                     if (finalReaderContext.scrollContext() != null) {
@@ -718,6 +770,7 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
                     searchOperationListener.onFreeReaderContext(finalReaderContext);
                 }
             });
+            // 放入id 指向 reader
             putReaderContext(finalReaderContext);
             readerContext = null;
             return finalReaderContext;

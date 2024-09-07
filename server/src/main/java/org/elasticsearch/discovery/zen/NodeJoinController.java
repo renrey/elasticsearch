@@ -78,7 +78,7 @@ public class NodeJoinController {
         final CountDownLatch done = new CountDownLatch(1);
 
         final ElectionCallback wrapperCallback = new ElectionCallback() {
-            // 当过半节点join，完成发布集群状态后触发，等于唤醒当前线程
+            // 当过半节点join，完成发布集群状态后触发 -> 用来唤醒当前线程
             @Override
             public void onElectedAsMaster(ClusterState state) {
                 done.countDown();
@@ -101,8 +101,11 @@ public class NodeJoinController {
                 assert electionContext != null : "waitToBeElectedAsMaster is called we are not accumulating joins";
                 myElectionContext = electionContext;
                 // 设置等待join的配置
-                electionContext.onAttemptToBeElected(requiredMasterJoins, wrapperCallback);
-                // 判断一次是否到达成为commit阶段
+                electionContext.onAttemptToBeElected(requiredMasterJoins, wrapperCallback);// 怎么调用wrapperCallback？
+                // 判断一次是否到达成为commit阶段，其他就是handleJoinRequest时触发了
+                /**
+                 * @see NodeJoinController#handleJoinRequest(DiscoveryNode, MembershipAction.JoinCallback)
+                 */
                 checkPendingJoinsAndElectIfNeeded();
             }
 
@@ -172,6 +175,7 @@ public class NodeJoinController {
     public synchronized void handleJoinRequest(final DiscoveryNode node, final MembershipAction.JoinCallback callback) {
         // 选举在进行中
         if (electionContext != null) {
+            // join请求代表投票给自己
             /**
              * 1. 记录当前节点为选自己的
              * 2.并保存选举后，给对应节点的处理（就是发送响应）
@@ -351,6 +355,7 @@ public class NodeJoinController {
         private void onElectedAsMaster(ClusterState state) {
             assert MasterService.assertMasterUpdateThread();
             assert state.nodes().isLocalNodeElectedMaster() : "onElectedAsMaster called but local node is not master";
+            // 唤醒discovery线程-》成功
             ElectionCallback callback = getCallback(); // get under lock
             if (callback != null) {
                 callback.onElectedAsMaster(state);
@@ -359,6 +364,7 @@ public class NodeJoinController {
 
         private void onFailure(Throwable t) {
             assert MasterService.assertMasterUpdateThread();
+            // 唤醒discovery线程，失败了
             ElectionCallback callback = getCallback(); // get under lock
             if (callback != null) {
                 callback.onFailure(t);

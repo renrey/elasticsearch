@@ -112,6 +112,7 @@ public class ThreadPool implements ReportingService<ThreadPoolInfo>, Scheduler {
     public static final Map<String, ThreadPoolType> THREAD_POOL_TYPES;
 
     static {
+        // 所有的线程池及其类型
         HashMap<String, ThreadPoolType> map = new HashMap<>();
         map.put(Names.SAME, ThreadPoolType.DIRECT);
         map.put(Names.GENERIC, ThreadPoolType.SCALING);
@@ -160,16 +161,30 @@ public class ThreadPool implements ReportingService<ThreadPoolInfo>, Scheduler {
         assert Node.NODE_NAME_SETTING.exists(settings);
 
         final Map<String, ExecutorBuilder> builders = new HashMap<>();
-        final int allocatedProcessors = EsExecutors.allocatedProcessors(settings);
-        final int halfProcMaxAt5 = halfAllocatedProcessorsMaxFive(allocatedProcessors);
-        final int halfProcMaxAt10 = halfAllocatedProcessorsMaxTen(allocatedProcessors);
-        final int genericThreadPoolMax = boundedBy(4 * allocatedProcessors, 128, 512);
+        final int allocatedProcessors = EsExecutors.allocatedProcessors(settings);// 默认指定核心数
+        final int halfProcMaxAt5 = halfAllocatedProcessorsMaxFive(allocatedProcessors);// 一半，不超过5
+        final int halfProcMaxAt10 = halfAllocatedProcessorsMaxTen(allocatedProcessors);// 一半，不超过10
+        final int genericThreadPoolMax = boundedBy(4 * allocatedProcessors, 128, 512);// 4倍，范围限定128-512
+        // 各个线程池的builder配置-》配置后构造对象即可
+
+        //通用GENERIC：动态线程，默认4个core线程，最多扩容核心的4倍线程数，空闲时间30s
         builders.put(Names.GENERIC, new ScalingExecutorBuilder(Names.GENERIC, 4, genericThreadPoolMax, TimeValue.timeValueSeconds(30)));
+
+        /**
+         * 底层小操作，都是固定核心数线程，但写比读更多队列长度
+         */
+        // write：默认队列1w，固定线程，使用核心线程数
         builders.put(Names.WRITE, new FixedExecutorBuilder(settings, Names.WRITE, allocatedProcessors, 10000));
+        // GET:默认队列1k，固定线程，使用核心线程数
         builders.put(Names.GET, new FixedExecutorBuilder(settings, Names.GET, allocatedProcessors, 1000));
         builders.put(Names.ANALYZE, new FixedExecutorBuilder(settings, Names.ANALYZE, 1, 16));
+
+
+        // search:队列1k ，动态调整线程数，核心数的3/2+1
+        // 核心功能，所以（同时执行）线程数多
         builders.put(Names.SEARCH, new AutoQueueAdjustingExecutorBuilder(settings,
                         Names.SEARCH, searchThreadPoolSize(allocatedProcessors), 1000, 1000, 1000, 2000));
+        // search限流
         builders.put(Names.SEARCH_THROTTLED, new AutoQueueAdjustingExecutorBuilder(settings,
             Names.SEARCH_THROTTLED, 1, 100, 100, 100, 200));
         builders.put(Names.MANAGEMENT,
@@ -177,16 +192,32 @@ public class ThreadPool implements ReportingService<ThreadPoolInfo>, Scheduler {
         // no queue as this means clients will need to handle rejections on listener queue even if the operation succeeded
         // the assumption here is that the listeners should be very lightweight on the listeners side
         builders.put(Names.LISTENER, new FixedExecutorBuilder(settings, Names.LISTENER, halfProcMaxAt10, -1, true));
+
+        /**
+         * 数据文件相关操作的线程池，都是动态线程池，默认core线程数都是1，最大都取一半，存活都是5s
+         */
+        // FLUSH：动态线程，core线程1，最大用当前核心的一半，不超过5，存活5s
         builders.put(Names.FLUSH, new ScalingExecutorBuilder(Names.FLUSH, 1, halfProcMaxAt5, TimeValue.timeValueMinutes(5)));
+        // REFRESH：动态线程，core线程1，最大用当前核心的一半，不超过10（多核即比flush可更多，但核心没超过上限时其实都一样），存活5s
         builders.put(Names.REFRESH, new ScalingExecutorBuilder(Names.REFRESH, 1, halfProcMaxAt10, TimeValue.timeValueMinutes(5)));
+        // WARMER：动态线程，core线程1，最大用当前核心的一半，不超过5，存活5s
         builders.put(Names.WARMER, new ScalingExecutorBuilder(Names.WARMER, 1, halfProcMaxAt5, TimeValue.timeValueMinutes(5)));
+        // SNAPSHOT：动态线程，core线程1，最大用当前核心的一半，不超过5，存活5s
         builders.put(Names.SNAPSHOT, new ScalingExecutorBuilder(Names.SNAPSHOT, 1, halfProcMaxAt5, TimeValue.timeValueMinutes(5)));
+
+
         builders.put(Names.FETCH_SHARD_STARTED,
                 new ScalingExecutorBuilder(Names.FETCH_SHARD_STARTED, 1, 2 * allocatedProcessors, TimeValue.timeValueMinutes(5)));
         builders.put(Names.FORCE_MERGE, new FixedExecutorBuilder(settings, Names.FORCE_MERGE, 1, -1));
         builders.put(Names.FETCH_SHARD_STORE,
                 new ScalingExecutorBuilder(Names.FETCH_SHARD_STORE, 1, 2 * allocatedProcessors, TimeValue.timeValueMinutes(5)));
+
+        /**
+         * SYSTEM线程池都是固定线程数，且不大都是一半（上限=5），读比写的队列容量多
+         */
+        // SYSTEM_READ：线程1为最大用当前核心的一半，不超过5，队列2k
         builders.put(Names.SYSTEM_READ, new FixedExecutorBuilder(settings, Names.SYSTEM_READ, halfProcMaxAt5, 2000, false));
+        // SYSTEM_WRITE：线程1为最大用当前核心的一半，不超过5，队列1k
         builders.put(Names.SYSTEM_WRITE, new FixedExecutorBuilder(settings, Names.SYSTEM_WRITE, halfProcMaxAt5, 1000, false));
 
         for (final ExecutorBuilder<?> builder : customBuilders) {
@@ -202,14 +233,17 @@ public class ThreadPool implements ReportingService<ThreadPoolInfo>, Scheduler {
         final Map<String, ExecutorHolder> executors = new HashMap<>();
         for (final Map.Entry<String, ExecutorBuilder> entry : builders.entrySet()) {
             final ExecutorBuilder.ExecutorSettings executorSettings = entry.getValue().getSettings(settings);
+            // 构建线程池对象
             final ExecutorHolder executorHolder = entry.getValue().build(executorSettings, threadContext);
             if (executors.containsKey(executorHolder.info.getName())) {
                 throw new IllegalStateException("duplicate executors with name [" + executorHolder.info.getName() + "] registered");
             }
             logger.debug("created thread pool: {}", entry.getValue().formatInfo(executorHolder.info));
+            // 存到executors
             executors.put(entry.getKey(), executorHolder);
         }
 
+        // SAME线程池：直接执行类型——> 只是异步执行效果
         executors.put(Names.SAME, new ExecutorHolder(DIRECT_EXECUTOR, new Info(Names.SAME, ThreadPoolType.DIRECT)));
         this.executors = unmodifiableMap(executors);
 

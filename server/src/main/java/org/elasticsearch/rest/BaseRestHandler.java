@@ -39,6 +39,7 @@ import java.util.stream.Collectors;
  * the transport requests executed by the associated client. While the context is fully copied over, not all the headers
  * are copied, but a selected few. It is possible to control what headers are copied over by returning them in
  * {@link ActionPlugin#getRestHeaders()}.
+ * handler 处理的参数还是会带点rest属性
  */
 public abstract class BaseRestHandler implements RestHandler {
 
@@ -114,6 +115,9 @@ public abstract class BaseRestHandler implements RestHandler {
         // execute the action
         /**
          * 2. 具体执行action，参数是RestChannel
+         *
+         * handler 处理的参数还是会带点rest属性
+         * action则是再细到具体业务处理了
          */
         action.accept(channel);
     }

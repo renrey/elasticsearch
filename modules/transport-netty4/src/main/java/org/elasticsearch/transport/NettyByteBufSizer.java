@@ -22,10 +22,14 @@ public class NettyByteBufSizer extends MessageToMessageDecoder<ByteBuf> {
     protected void decode(ChannelHandlerContext ctx, ByteBuf buf, List<Object> out) {
         int readableBytes = buf.readableBytes();
         if (buf.capacity() >= 1024) {
+            // buf容量超过1024
+
+            // buf丢弃已读的，设置容量为新的
             ByteBuf resized = buf.discardReadBytes().capacity(readableBytes);
             assert resized.readableBytes() == readableBytes;
             out.add(resized.retain());
         } else {
+            // buf容量小于1024
             out.add(buf.retain());
         }
     }

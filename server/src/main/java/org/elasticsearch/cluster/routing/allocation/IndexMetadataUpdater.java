@@ -109,6 +109,7 @@ public class IndexMetadataUpdater extends RoutingChangesObserver.AbstractRouting
                 ShardId shardId = shardEntry.getKey();
                 Updates updates = shardEntry.getValue();
                 indexMetadataBuilder = updateInSyncAllocations(newRoutingTable, oldIndexMetadata, indexMetadataBuilder, shardId, updates);
+                // 更新生成PrimaryTerm
                 indexMetadataBuilder = updatePrimaryTerm(oldIndexMetadata, indexMetadataBuilder, shardId, updates);
             }
 
@@ -282,6 +283,7 @@ public class IndexMetadataUpdater extends RoutingChangesObserver.AbstractRouting
             if (indexMetadataBuilder == null) {
                 indexMetadataBuilder = IndexMetadata.builder(oldIndexMetadata);
             }
+            // PrimaryTerm+1
             indexMetadataBuilder.primaryTerm(shardId.id(), oldIndexMetadata.primaryTerm(shardId.id()) + 1);
         }
         return indexMetadataBuilder;

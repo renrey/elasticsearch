@@ -219,8 +219,12 @@ public class PublishClusterStateAction {
         try {
             long timeLeftInNanos = Math.max(0, publishTimeout.nanos() - commitTime);
             final BlockingClusterStatePublishResponseHandler publishResponseHandler = sendingController.getPublishResponseHandler();
+
+            // awaitAllNodes等待 所有（commit）返回
             sendingController.setPublishingTimedOut(
                     publishResponseHandler.awaitAllNodes(TimeValue.timeValueNanos(timeLeftInNanos)) == false);
+            // 看着下面就是打印超时的、失败的
+            // 出现超时的
             if (sendingController.getPublishingTimedOut()) {
                 DiscoveryNode[] pendingNodes = publishResponseHandler.pendingNodes();
                 // everyone may have just responded
@@ -355,6 +359,7 @@ public class PublishClusterStateAction {
                             /**
                              * 直接使用handler
                              * @see AckClusterStatePublishResponseHandler
+                             * 代表需要commit数-1
                              */
                             sendingController.getPublishResponseHandler().onResponse(node);
                         }
@@ -538,6 +543,7 @@ public class PublishClusterStateAction {
                                   BlockingClusterStatePublishResponseHandler publishResponseHandler) {
             this.clusterState = clusterState;
             this.publishResponseHandler = publishResponseHandler;
+            // 即选举成功mini master数
             this.neededMastersToCommit = Math.max(0, minMasterNodes - 1); // we are one of the master nodes
             this.pendingMasterNodes = totalMasterNodes - 1;
             if (this.neededMastersToCommit > this.pendingMasterNodes) {
@@ -615,7 +621,7 @@ public class PublishClusterStateAction {
                 // 达到标准，更新状态
                 if (markAsCommitted()) {
                     /**
-                     * 对每个已经收到发布的节点，发送commit请求
+                     * 对每个已经收到发布响应的节点，发送commit请求
                      */
                     for (DiscoveryNode nodeToCommit : sendAckedBeforeCommit) {
                         sendCommitToNode(nodeToCommit, clusterState, this);

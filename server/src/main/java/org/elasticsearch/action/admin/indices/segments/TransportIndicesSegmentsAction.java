@@ -88,7 +88,9 @@ public class TransportIndicesSegmentsAction
         ActionListener.completeWith(listener, () -> {
             assert task instanceof CancellableTask;
             IndexService indexService = indicesService.indexServiceSafe(shardRouting.index());
+            // 获取shard对象
             IndexShard indexShard = indexService.getShard(shardRouting.id());
+            // 获取shard中segment
             return new ShardSegments(indexShard.routingEntry(), indexShard.segments(request.verbose()));
         });
     }

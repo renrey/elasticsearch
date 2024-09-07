@@ -15,8 +15,12 @@ import org.apache.lucene.search.TopDocs;
  */
 // TODO: Remove this class when https://github.com/elastic/elasticsearch/issues/32981 is addressed.
 public final class TopDocsAndMaxScore {
+    /**
+     * maxScore
+     * scoreDocs数组: 检索文档id、得分
+     */
+    public final TopDocs topDocs; // 检索结果
 
-    public final TopDocs topDocs;
     public float maxScore;
 
     public TopDocsAndMaxScore(TopDocs topDocs, float maxScore) {

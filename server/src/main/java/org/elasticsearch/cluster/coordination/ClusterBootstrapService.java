@@ -147,6 +147,7 @@ public class ClusterBootstrapService {
         logger.info("no discovery configuration found, will perform best-effort cluster bootstrapping after [{}] " +
             "unless existing master is discovered", unconfiguredBootstrapTimeout);
 
+        // 提交一个集群初始化任务 -》即未使用过的
         transportService.getThreadPool().scheduleUnlessShuttingDown(unconfiguredBootstrapTimeout, Names.GENERIC, new Runnable() {
             @Override
             public void run() {
@@ -154,7 +155,7 @@ public class ClusterBootstrapService {
                 final List<DiscoveryNode> zen1Nodes = discoveredNodes.stream().filter(Coordinator::isZen1Node).collect(Collectors.toList());
                 if (zen1Nodes.isEmpty()) {
                     logger.debug("performing best-effort cluster bootstrapping with {}", discoveredNodes);
-                    startBootstrap(discoveredNodes, emptyList());
+                    startBootstrap(discoveredNodes, emptyList());// 新版本启动？
                 } else {
                     logger.info("avoiding best-effort cluster bootstrapping due to discovery of pre-7.0 nodes {}", zen1Nodes);
                 }
@@ -168,15 +169,26 @@ public class ClusterBootstrapService {
     }
 
     private Set<DiscoveryNode> getDiscoveredNodes() {
+        // 已知的DiscoveryNode：本地节点 、
+        /**
+         * discoveredNodesSupplier -》大概初始通过seed 寻址获取节点
+         * @see Coordinator#getFoundPeers()
+         */
         return Stream.concat(Stream.of(transportService.getLocalNode()),
             StreamSupport.stream(discoveredNodesSupplier.get().spliterator(), false)).collect(Collectors.toSet());
     }
 
     private void startBootstrap(Set<DiscoveryNode> discoveryNodes, List<String> unsatisfiedRequirements) {
+        // 注意了，这里要求找到寻址的都是master角色的。。并且本地也是master（其实非master 这里就结束了）
         assert discoveryNodes.stream().allMatch(DiscoveryNode::isMasterNode) : discoveryNodes;
         assert discoveryNodes.stream().noneMatch(Coordinator::isZen1Node) : discoveryNodes;
         assert unsatisfiedRequirements.size() < discoveryNodes.size() : discoveryNodes + " smaller than " + unsatisfiedRequirements;
         if (bootstrappingPermitted.compareAndSet(true, false)) {
+            // 生成 VotingConfiguration：nodeIds = 已知的master node id\
+            /**
+             * 即寻址找到的节点(必须全是master)
+             * @see Coordinator#setInitialConfiguration(VotingConfiguration)
+             */
             doBootstrap(new VotingConfiguration(Stream.concat(discoveryNodes.stream().map(DiscoveryNode::getId),
                 unsatisfiedRequirements.stream().map(s -> BOOTSTRAP_PLACEHOLDER_PREFIX + s))
                 .collect(Collectors.toSet())));

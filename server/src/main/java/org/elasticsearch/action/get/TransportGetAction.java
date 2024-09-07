@@ -88,6 +88,7 @@ public class TransportGetAction extends TransportSingleShardAction<GetRequest, G
         IndexService indexService = indicesService.indexServiceSafe(shardId.getIndex());
         IndexShard indexShard = indexService.getShard(shardId.id());
 
+        // get请求参数带上refresh-》触发refresh
         if (request.refresh() && request.realtime() == false) {
             indexShard.refresh("refresh_flag_get");
         }

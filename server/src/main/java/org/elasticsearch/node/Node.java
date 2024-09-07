@@ -348,6 +348,7 @@ public class Node implements Closeable {
                     initialEnvironment.logsFile(), initialEnvironment.pluginsFile());
             }
 
+            // 核心服务插件！！！
             this.pluginsService = new PluginsService(tmpSettings, initialEnvironment.configFile(), initialEnvironment.modulesFile(),
                 initialEnvironment.pluginsFile(), classpathPlugins);
             final Settings settings = pluginsService.updatedSettings();
@@ -500,6 +501,7 @@ public class Node implements Closeable {
              */
             ModulesBuilder modules = new ModulesBuilder();
             // plugin modules must be added here, before others or we can get crazy injection errors...
+            // 各种插件的module加载，但不初始化
             for (Module pluginModule : pluginsService.createGuiceModules()) {
                 modules.add(pluginModule);
             }
@@ -511,8 +513,8 @@ public class Node implements Closeable {
                 repositoriesServiceReference::get, rerouteServiceReference::get);
             final ClusterModule clusterModule = new ClusterModule(settings, clusterService, clusterPlugins, clusterInfoService,
                 snapshotsInfoService, threadPool.getThreadContext(), systemIndices);
-            modules.add(clusterModule);
-            modules.add(indicesModule);
+            modules.add(clusterModule);// clusterModule
+            modules.add(indicesModule);// indicesModule
 
             List<BreakerSettings> pluginCircuitBreakers = pluginsService.filterPlugins(CircuitBreakerPlugin.class)
                 .stream()
@@ -539,6 +541,7 @@ public class Node implements Closeable {
                 = new PersistedClusterStateService(nodeEnvironment, xContentRegistry, bigArrays, clusterService.getClusterSettings(),
                 threadPool::relativeTimeInMillis);
 
+            // 各种自定义插件类
             // collect engine factory providers from plugins
             final Collection<EnginePlugin> enginePlugins = pluginsService.filterPlugins(EnginePlugin.class);
             final Collection<Function<IndexSettings, Optional<EngineFactory>>> engineFactoryProviders =
@@ -577,11 +580,13 @@ public class Node implements Closeable {
             final SystemIndexManager systemIndexManager = new SystemIndexManager(systemIndices, client);
             clusterService.addListener(systemIndexManager);
 
+            // 重定向路由
             final RerouteService rerouteService
                 = new BatchedRerouteService(clusterService, clusterModule.getAllocationService()::reroute);
             rerouteServiceReference.set(rerouteService);
             clusterService.setRerouteService(rerouteService);
 
+            // 当前节点所有index管理类
             final IndicesService indicesService =
                 new IndicesService(settings, pluginsService, nodeEnvironment, xContentRegistry, analysisModule.getAnalysisRegistry(),
                     clusterModule.getIndexNameExpressionResolver(), indicesModule.getMapperRegistry(), namedWriteableRegistry,
@@ -590,6 +595,7 @@ public class Node implements Closeable {
                     searchModule.getValuesSourceRegistry(), recoveryStateFactories, indexFoldersDeletionListeners,
                     snapshotCommitSuppliers);
 
+            // 别名验证
             final AliasValidator aliasValidator = new AliasValidator();
 
             final ShardLimitValidator shardLimitValidator = new ShardLimitValidator(settings, clusterService);
@@ -614,6 +620,7 @@ public class Node implements Closeable {
             final MetadataCreateDataStreamService metadataCreateDataStreamService =
                 new MetadataCreateDataStreamService(threadPool, clusterService, metadataCreateIndexService);
 
+            // 插件？
             Collection<Object> pluginComponents = pluginsService.filterPlugins(Plugin.class).stream()
                 .flatMap(p -> p.createComponents(client, clusterService, threadPool, resourceWatcherService,
                                                  scriptService, xContentRegistry, environment, nodeEnvironment,
@@ -631,6 +638,9 @@ public class Node implements Closeable {
              * Rest服务
              */
             final RestController restController = actionModule.getRestController();
+            // 这个模块提供的底层通信
+            // 这里等于把RestController绑定到networkModule-》 网络io处理模块与rest接口处理模块关联起来
+            // pluginsService.filterPlugins(NetworkPlugin.class) -》获取NetworkPlugin插件
             final NetworkModule networkModule = new NetworkModule(settings, false, pluginsService.filterPlugins(NetworkPlugin.class),
                 threadPool, bigArrays, pageCacheRecycler, circuitBreakerService, namedWriteableRegistry, xContentRegistry,
                 networkService, restController, clusterService.getClusterSettings());
@@ -645,6 +655,7 @@ public class Node implements Closeable {
                 clusterService.addListener(new SystemIndexMetadataUpgradeService(systemIndices, clusterService));
             }
             new TemplateUpgradeService(client, clusterService, threadPool, indexTemplateMetadataUpgraders);
+            // 从网络模块拿到通信对象
             // 默认Netty4Transport
             final Transport transport = networkModule.getTransportSupplier().get();
             Set<String> taskHeaders = Stream.concat(
@@ -655,6 +666,7 @@ public class Node implements Closeable {
             // 集群通信
             /**
              * Transport通信Service, 执行调用action操作的实际触发、接收组件入口（rest只是外部发起操作的入口）
+             * 就是上层使用的
              */
             final TransportService transportService = newTransportService(settings, transport, threadPool,
                 networkModule.getTransportInterceptor(), localNodeFactory, settingsModule.getClusterSettings(), taskHeaders);
@@ -665,6 +677,7 @@ public class Node implements Closeable {
             final HttpServerTransport httpServerTransport = newHttpTransport(networkModule);
             final IndexingPressure indexingLimits = new IndexingPressure(settings);
 
+            // 快照、备份、恢复相关
             final RecoverySettings recoverySettings = new RecoverySettings(settings, settingsModule.getClusterSettings());
             RepositoriesModule repositoriesModule = new RepositoriesModule(this.environment,
                 pluginsService.filterPlugins(RepositoryPlugin.class), transportService, clusterService, bigArrays, xContentRegistry,
@@ -693,15 +706,20 @@ public class Node implements Closeable {
                 clusterService.getClusterSettings(), pluginsService.filterPlugins(DiscoveryPlugin.class),
                 clusterModule.getAllocationService(), environment.configFile(), gatewayMetaState, rerouteService,
                 fsHealthService);
+
+
+            // 1个节点功能汇总
             this.nodeService = new NodeService(settings, threadPool, monitorService, discoveryModule.getDiscovery(),
                 transportService, indicesService, pluginsService, circuitBreakerService, scriptService,
                 httpServerTransport, ingestService, clusterService, settingsModule.getSettingsFilter(), responseCollectorService,
                 searchTransportService, indexingLimits, searchModule.getValuesSourceRegistry().getUsageService());
 
+            // 搜索功能使用汇总
             final SearchService searchService = newSearchService(clusterService, indicesService,
                 threadPool, scriptService, bigArrays, searchModule.getFetchPhase(),
                 responseCollectorService, circuitBreakerService);
 
+            // 持久化？
             final List<PersistentTasksExecutor<?>> tasksExecutors = pluginsService
                 .filterPlugins(PersistentTaskPlugin.class).stream()
                 .map(p -> p.getPersistentTasksExecutor(clusterService, threadPool, client, settingsModule,
@@ -715,12 +733,13 @@ public class Node implements Closeable {
             resourcesToClose.add(persistentTasksClusterService);
             final PersistentTasksService persistentTasksService = new PersistentTasksService(clusterService, threadPool, client);
 
+            // 功能先看Service，代表我们用到的功能划分
             // es主功能全绑在这个module
             modules.add(b -> {
                     b.bind(Node.class).toInstance(this);
-                    b.bind(NodeService.class).toInstance(nodeService);
+                    b.bind(NodeService.class).toInstance(nodeService);// 节点功能
                     b.bind(NamedXContentRegistry.class).toInstance(xContentRegistry);
-                    b.bind(PluginsService.class).toInstance(pluginsService);
+                    b.bind(PluginsService.class).toInstance(pluginsService);// 插件功能
                     b.bind(Client.class).toInstance(client);
                     b.bind(NodeClient.class).toInstance(client);
                     b.bind(Environment.class).toInstance(this.environment);
@@ -733,29 +752,29 @@ public class Node implements Closeable {
                     b.bind(ScriptService.class).toInstance(scriptService);
                     b.bind(AnalysisRegistry.class).toInstance(analysisModule.getAnalysisRegistry());
                     b.bind(IngestService.class).toInstance(ingestService);
-                    b.bind(IndexingPressure.class).toInstance(indexingLimits);
+                    b.bind(IndexingPressure.class).toInstance(indexingLimits);// 索引压力？
                     b.bind(UsageService.class).toInstance(usageService);
                     b.bind(AggregationUsageService.class).toInstance(searchModule.getValuesSourceRegistry().getUsageService());
                     b.bind(NamedWriteableRegistry.class).toInstance(namedWriteableRegistry);
                     b.bind(MetadataUpgrader.class).toInstance(metadataUpgrader);
                     b.bind(MetaStateService.class).toInstance(metaStateService);
                     b.bind(PersistedClusterStateService.class).toInstance(lucenePersistedStateFactory);
-                    b.bind(IndicesService.class).toInstance(indicesService);
+                    b.bind(IndicesService.class).toInstance(indicesService);// 本地所有index管理
                     b.bind(AliasValidator.class).toInstance(aliasValidator);
                     b.bind(MetadataCreateIndexService.class).toInstance(metadataCreateIndexService);
                     b.bind(MetadataCreateDataStreamService.class).toInstance(metadataCreateDataStreamService);
-                    b.bind(SearchService.class).toInstance(searchService);
-                    b.bind(SearchTransportService.class).toInstance(searchTransportService);
+                    b.bind(SearchService.class).toInstance(searchService);// 搜索服务
+                    b.bind(SearchTransportService.class).toInstance(searchTransportService);// 内部集群搜索
                     b.bind(SearchPhaseController.class).toInstance(new SearchPhaseController(
                         namedWriteableRegistry, searchService::aggReduceContextBuilder));
                     b.bind(Transport.class).toInstance(transport);
-                    b.bind(TransportService.class).toInstance(transportService);
+                    b.bind(TransportService.class).toInstance(transportService);// 通信服务
                     b.bind(NetworkService.class).toInstance(networkService);
                     b.bind(UpdateHelper.class).toInstance(new UpdateHelper(scriptService));
                     b.bind(IndexMetadataVerifier.class).toInstance(indexMetadataVerifier);
                     b.bind(ClusterInfoService.class).toInstance(clusterInfoService);
                     b.bind(SnapshotsInfoService.class).toInstance(snapshotsInfoService);
-                    b.bind(GatewayMetaState.class).toInstance(gatewayMetaState);
+                    b.bind(GatewayMetaState.class).toInstance(gatewayMetaState); // 网格？
                     b.bind(Discovery.class).toInstance(discoveryModule.getDiscovery()); // 集群发现的实例创建
                     {
                         processRecoverySettings(settingsModule.getClusterSettings(), recoverySettings);
@@ -765,7 +784,7 @@ public class Node implements Closeable {
                                 transportService, recoverySettings, clusterService));
                     }
                     b.bind(HttpServerTransport.class).toInstance(httpServerTransport);
-                    pluginComponents.stream().forEach(p -> b.bind((Class) p.getClass()).toInstance(p));
+                    pluginComponents.stream().forEach(p -> b.bind((Class) p.getClass()).toInstance(p));// 应该是插件对象
                     b.bind(PersistentTasksService.class).toInstance(persistentTasksService);
                     b.bind(PersistentTasksClusterService.class).toInstance(persistentTasksClusterService);
                     b.bind(PersistentTasksExecutorRegistry.class).toInstance(registry);
@@ -773,7 +792,7 @@ public class Node implements Closeable {
                     b.bind(SnapshotsService.class).toInstance(snapshotsService);
                     b.bind(SnapshotShardsService.class).toInstance(snapshotShardsService);
                     b.bind(TransportNodesSnapshotsStatus.class).toInstance(nodesSnapshotsStatus);
-                    b.bind(RestoreService.class).toInstance(restoreService);
+                    b.bind(RestoreService.class).toInstance(restoreService);// 恢复数据 -》怎么创建index对象
                     b.bind(RerouteService.class).toInstance(rerouteService);
                     b.bind(ShardLimitValidator.class).toInstance(shardLimitValidator);
                     b.bind(FsHealthService.class).toInstance(fsHealthService);
@@ -790,6 +809,7 @@ public class Node implements Closeable {
             // reroute, which needs to call into the allocation service. We close the loop here:
             clusterModule.setExistingShardsAllocators(injector.getInstance(GatewayAllocator.class));
 
+            // 插件
             List<LifecycleComponent> pluginLifecycleComponents = pluginComponents.stream()
                 .filter(p -> p instanceof LifecycleComponent)
                 .map(p -> (LifecycleComponent) p).collect(Collectors.toList());
@@ -798,6 +818,8 @@ public class Node implements Closeable {
             resourcesToClose.addAll(pluginLifecycleComponents);
             resourcesToClose.add(injector.getInstance(PeerRecoverySourceService.class));
             this.pluginLifecycleComponents = Collections.unmodifiableList(pluginLifecycleComponents);
+
+            // 初始化通信客户端
             client.initialize(injector.getInstance(new Key<Map<ActionType, TransportAction>>() {}),
                     () -> clusterService.localNode().getId(), transportService.getRemoteClusterService(),
                     namedWriteableRegistry);
@@ -1002,6 +1024,7 @@ public class Node implements Closeable {
 
         /**
          * Http服务器启动
+         * @see org.elasticsearch.http.netty4.Netty4HttpServerTransport#doStart()
          */
         injector.getInstance(HttpServerTransport.class).start();
 

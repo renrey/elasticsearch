@@ -98,7 +98,7 @@ public class Netty4Utils {
         final int readableBytes = buffer.readableBytes();
         if (readableBytes == 0) {
             return BytesArray.EMPTY;
-        } else if (buffer.hasArray()) {
+        } else if (buffer.hasArray()) {// 如果有堆中缓冲数组
             return new BytesArray(buffer.array(), buffer.arrayOffset() + buffer.readerIndex(), readableBytes);
         } else {
             final ByteBuffer[] byteBuffers = buffer.nioBuffers();
